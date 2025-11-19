@@ -24,11 +24,12 @@ public class NametagBinding {
      * Create a nametag binding event.
      * This is a parameterized replaceable event (kind 30078) that maps a Nostr pubkey to a Unicity nametag.
      *
-     * @param keyManager NostrKeyManager to sign the event
+     * @param keyManager the key manager for signing
      * @param nametagId Nametag identifier (e.g., "alice@unicity" or phone number)
      * @param unicityAddress Unicity blockchain address
      * @param defaultCountry Default country for phone normalization (e.g., "US")
      * @return Signed binding event
+     * @throws Exception if event creation or signing fails
      */
     public static Event createBindingEvent(NostrKeyManager keyManager, String nametagId,
                                           String unicityAddress, String defaultCountry) throws Exception {
@@ -73,6 +74,12 @@ public class NametagBinding {
 
     /**
      * Create a nametag binding event with default country "US".
+     *
+     * @param keyManager the key manager for signing
+     * @param nametagId the nametag identifier
+     * @param unicityAddress the Unicity blockchain address
+     * @return signed binding event
+     * @throws Exception if event creation or signing fails
      */
     public static Event createBindingEvent(NostrKeyManager keyManager, String nametagId,
                                           String unicityAddress) throws Exception {
@@ -99,6 +106,9 @@ public class NametagBinding {
 
     /**
      * Create a filter to find Nostr pubkey by nametag (default country "US").
+     *
+     * @param nametagId the nametag identifier
+     * @return filter for querying the binding
      */
     public static Filter createNametagToPubkeyFilter(String nametagId) {
         return createNametagToPubkeyFilter(nametagId, "US");

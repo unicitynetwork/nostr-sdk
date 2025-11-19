@@ -54,23 +54,41 @@ public final class EventKinds {
 
     // Ranges
 
-    /** Replaceable events: only most recent event is kept */
+    /**
+     * Replaceable events: only most recent event is kept.
+     *
+     * @param kind the event kind
+     * @return true if the kind is replaceable
+     */
     public static boolean isReplaceable(int kind) {
         return (kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000));
     }
 
-    /** Ephemeral events: not stored by relays */
+    /**
+     * Ephemeral events: not stored by relays.
+     *
+     * @param kind the event kind
+     * @return true if the kind is ephemeral
+     */
     public static boolean isEphemeral(int kind) {
         return (kind >= 20000 && kind < 30000);
     }
 
-    /** Parameterized replaceable events: replaceable per "d" tag */
+    /**
+     * Parameterized replaceable events: replaceable per "d" tag.
+     *
+     * @param kind the event kind
+     * @return true if the kind is parameterized replaceable
+     */
     public static boolean isParameterizedReplaceable(int kind) {
         return (kind >= 30000 && kind < 40000);
     }
 
     /**
      * Get human-readable name for event kind.
+     *
+     * @param kind the event kind
+     * @return the human-readable name
      */
     public static String getName(int kind) {
         switch (kind) {

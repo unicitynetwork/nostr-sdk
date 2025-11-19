@@ -44,6 +44,7 @@ public class SchnorrSigner {
      * @param message 32-byte message to sign
      * @param privateKey 32-byte private key
      * @return 64-byte signature (R.x || s)
+     * @throws Exception if signing fails
      */
     public static byte[] sign(byte[] message, byte[] privateKey) throws Exception {
         if (message.length != 32) {

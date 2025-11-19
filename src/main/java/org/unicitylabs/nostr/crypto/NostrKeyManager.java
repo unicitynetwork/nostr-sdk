@@ -84,6 +84,8 @@ public class NostrKeyManager {
 
     /**
      * Get private key as byte array (use with caution!).
+     *
+     * @return copy of the private key bytes
      */
     public byte[] getPrivateKey() {
         return Arrays.copyOf(privateKey, 32);
@@ -91,6 +93,8 @@ public class NostrKeyManager {
 
     /**
      * Get private key as hex string.
+     *
+     * @return hex-encoded private key
      */
     public String getPrivateKeyHex() {
         return new String(Hex.encodeHex(privateKey));
@@ -98,6 +102,8 @@ public class NostrKeyManager {
 
     /**
      * Get private key as Bech32 (nsec...).
+     *
+     * @return Bech32-encoded private key
      */
     public String getNsec() {
         return Bech32.encode("nsec", privateKey);
@@ -105,6 +111,8 @@ public class NostrKeyManager {
 
     /**
      * Get public key as byte array (32 bytes, x-only).
+     *
+     * @return copy of the public key bytes
      */
     public byte[] getPublicKey() {
         return Arrays.copyOf(publicKey, 32);
@@ -112,6 +120,8 @@ public class NostrKeyManager {
 
     /**
      * Get public key as hex string.
+     *
+     * @return hex-encoded public key
      */
     public String getPublicKeyHex() {
         return publicKeyHex;
@@ -119,6 +129,8 @@ public class NostrKeyManager {
 
     /**
      * Get public key as Bech32 (npub...).
+     *
+     * @return Bech32-encoded public key
      */
     public String getNpub() {
         return Bech32.encode("npub", publicKey);
@@ -131,6 +143,7 @@ public class NostrKeyManager {
      *
      * @param messageHash 32-byte hash to sign
      * @return 64-byte Schnorr signature
+     * @throws Exception if signing fails
      */
     public byte[] sign(byte[] messageHash) throws Exception {
         return SchnorrSigner.sign(messageHash, privateKey);
@@ -141,6 +154,7 @@ public class NostrKeyManager {
      *
      * @param messageHash 32-byte hash to sign
      * @return Hex-encoded signature
+     * @throws Exception if signing fails
      */
     public String signHex(byte[] messageHash) throws Exception {
         return new String(Hex.encodeHex(sign(messageHash)));
@@ -185,6 +199,7 @@ public class NostrKeyManager {
      * @param message Plaintext message
      * @param recipientPublicKey Recipient's 32-byte x-only public key
      * @return Encrypted content
+     * @throws Exception if encryption fails
      */
     public String encrypt(String message, byte[] recipientPublicKey) throws Exception {
         return NIP04Encryption.encrypt(message, privateKey, recipientPublicKey);
@@ -196,6 +211,7 @@ public class NostrKeyManager {
      * @param message Plaintext message
      * @param recipientPublicKeyHex Recipient's hex-encoded public key
      * @return Encrypted content
+     * @throws Exception if encryption fails
      */
     public String encryptHex(String message, String recipientPublicKeyHex) throws Exception {
         return encrypt(message, Hex.decodeHex(recipientPublicKeyHex.toCharArray()));
@@ -208,6 +224,7 @@ public class NostrKeyManager {
      * @param encryptedContent Encrypted content
      * @param senderPublicKey Sender's 32-byte x-only public key
      * @return Decrypted plaintext message
+     * @throws Exception if decryption fails
      */
     public String decrypt(String encryptedContent, byte[] senderPublicKey) throws Exception {
         return NIP04Encryption.decrypt(encryptedContent, privateKey, senderPublicKey);
@@ -219,6 +236,7 @@ public class NostrKeyManager {
      * @param encryptedContent Encrypted content
      * @param senderPublicKeyHex Sender's hex-encoded public key
      * @return Decrypted plaintext message
+     * @throws Exception if decryption fails
      */
     public String decryptHex(String encryptedContent, String senderPublicKeyHex) throws Exception {
         return decrypt(encryptedContent, Hex.decodeHex(senderPublicKeyHex.toCharArray()));
@@ -229,6 +247,7 @@ public class NostrKeyManager {
      *
      * @param theirPublicKey Their 32-byte x-only public key
      * @return 32-byte shared secret
+     * @throws Exception if ECDH computation fails
      */
     public byte[] deriveSharedSecret(byte[] theirPublicKey) throws Exception {
         return NIP04Encryption.deriveSharedSecret(privateKey, theirPublicKey);
@@ -238,6 +257,9 @@ public class NostrKeyManager {
 
     /**
      * Check if a public key matches this key manager's public key.
+     *
+     * @param publicKeyHex the public key to check
+     * @return true if it matches this key manager's public key
      */
     public boolean isMyPublicKey(String publicKeyHex) {
         return this.publicKeyHex.equalsIgnoreCase(publicKeyHex);

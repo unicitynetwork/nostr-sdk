@@ -24,12 +24,13 @@ public class TokenTransferProtocol {
      * Create a token transfer event.
      * Encrypts the token JSON with NIP-04 (with compression for large payloads).
      *
-     * @param keyManager Sender's NostrKeyManager
+     * @param keyManager the key manager for signing
      * @param recipientPubkeyHex Recipient's public key (hex)
      * @param tokenJson Unicity SDK token JSON
      * @param amount Optional amount for metadata
      * @param symbol Optional symbol for metadata
      * @return Signed token transfer event
+     * @throws Exception if event creation or signing fails
      */
     public static Event createTokenTransferEvent(NostrKeyManager keyManager, String recipientPubkeyHex,
                                                 String tokenJson, Long amount, String symbol) throws Exception {
@@ -74,6 +75,12 @@ public class TokenTransferProtocol {
 
     /**
      * Create a token transfer event without amount/symbol metadata.
+     *
+     * @param keyManager the key manager for signing
+     * @param recipientPubkeyHex recipient's public key (hex)
+     * @param tokenJson Unicity SDK token JSON
+     * @return signed token transfer event
+     * @throws Exception if event creation or signing fails
      */
     public static Event createTokenTransferEvent(NostrKeyManager keyManager, String recipientPubkeyHex,
                                                 String tokenJson) throws Exception {
@@ -87,6 +94,7 @@ public class TokenTransferProtocol {
      * @param event Token transfer event
      * @param keyManager Recipient's NostrKeyManager
      * @return Token JSON string
+     * @throws Exception if decryption or parsing fails
      */
     public static String parseTokenTransfer(Event event, NostrKeyManager keyManager) throws Exception {
         if (event.getKind() != EventKinds.TOKEN_TRANSFER) {
@@ -122,6 +130,9 @@ public class TokenTransferProtocol {
 
     /**
      * Get amount metadata from token transfer event.
+     *
+     * @param event the token transfer event
+     * @return the amount or null if not present
      */
     public static Long getAmount(Event event) {
         String amountStr = event.getTagValue("amount");
@@ -137,6 +148,9 @@ public class TokenTransferProtocol {
 
     /**
      * Get symbol metadata from token transfer event.
+     *
+     * @param event the token transfer event
+     * @return the symbol or null if not present
      */
     public static String getSymbol(Event event) {
         return event.getTagValue("symbol");

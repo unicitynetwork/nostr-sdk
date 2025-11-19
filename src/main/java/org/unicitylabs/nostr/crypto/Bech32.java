@@ -198,9 +198,18 @@ public class Bech32 {
      * Result of Bech32 decoding.
      */
     public static class DecodedBech32 {
+        /** The human-readable part of the Bech32 string. */
         public final String hrp;
+
+        /** The decoded data bytes. */
         public final byte[] data;
 
+        /**
+         * Constructs a decoded Bech32 result.
+         *
+         * @param hrp the human-readable part
+         * @param data the decoded data bytes
+         */
         public DecodedBech32(String hrp, byte[] data) {
             this.hrp = hrp;
             this.data = data;

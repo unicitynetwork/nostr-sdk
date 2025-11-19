@@ -13,13 +13,21 @@ import java.util.Locale;
  * Utility class for deterministic nametag hashing.
  * This ensures privacy and allows phone numbers to be used as nametags.
  *
- * Examples:
- * - Regular nametag: "alice" → hash("unicity:nametag:alice")
- * - Phone as nametag: "+14155552671" → hash("unicity:nametag:+14155552671")
+ * <p>Examples:
+ * <ul>
+ * <li>Regular nametag: "alice" → hash("unicity:nametag:alice")</li>
+ * <li>Phone as nametag: "+14155552671" → hash("unicity:nametag:+14155552671")</li>
+ * </ul>
  *
- * This way phone numbers can BE nametags naturally!
+ * <p>This way phone numbers can BE nametags naturally!
  */
 public class NametagUtils {
+
+    /**
+     * Private constructor to prevent instantiation.
+     */
+    private NametagUtils() {
+    }
 
     private static final String NAMETAG_SALT = "unicity:nametag:";
     private static final PhoneNumberUtil phoneUtil = PhoneNumberUtil.getInstance();
@@ -43,6 +51,9 @@ public class NametagUtils {
 
     /**
      * Hash a nametag with default country "US".
+     *
+     * @param nametag the nametag to hash
+     * @return hex-encoded SHA-256 hash of the nametag
      */
     public static String hashNametag(String nametag) {
         return hashNametag(nametag, "US");

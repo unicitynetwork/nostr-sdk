@@ -43,6 +43,7 @@ public class NIP04Encryption {
      * @param myPrivateKey Sender's 32-byte private key
      * @param theirPublicKey Recipient's 32-byte x-only public key
      * @return Encrypted content in format: base64(ciphertext)?iv=base64(iv) or gz:base64(compressed)?iv=base64(iv)
+     * @throws Exception if encryption fails
      */
     public static String encrypt(String message, byte[] myPrivateKey, byte[] theirPublicKey) throws Exception {
         // Derive shared secret
@@ -90,6 +91,7 @@ public class NIP04Encryption {
      * @param myPrivateKey Recipient's 32-byte private key
      * @param theirPublicKey Sender's 32-byte x-only public key
      * @return Decrypted plaintext message
+     * @throws Exception if decryption fails
      */
     public static String decrypt(String encryptedContent, byte[] myPrivateKey, byte[] theirPublicKey) throws Exception {
         // Check if compressed
@@ -133,6 +135,7 @@ public class NIP04Encryption {
      * @param myPrivateKey My 32-byte private key
      * @param theirPublicKey Their 32-byte x-only public key
      * @return 32-byte shared secret
+     * @throws Exception if ECDH computation fails
      */
     public static byte[] deriveSharedSecret(byte[] myPrivateKey, byte[] theirPublicKey) throws Exception {
         if (myPrivateKey.length != 32) {

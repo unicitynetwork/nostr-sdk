@@ -117,6 +117,8 @@ public class NostrClient {
 
     /**
      * Check if client is connected to any relay.
+     *
+     * @return true if connected to at least one relay
      */
     public boolean isConnected() {
         return relayConnections.values().stream()
@@ -290,6 +292,11 @@ public class NostrClient {
 
     /**
      * Subscribe with a specific subscription ID.
+     *
+     * @param subscriptionId the subscription ID to use
+     * @param filter the filter for events
+     * @param listener the listener for received events
+     * @return the subscription ID
      */
     public String subscribe(String subscriptionId, Filter filter, NostrEventListener listener) {
         subscriptions.put(subscriptionId, new SubscriptionInfo(filter, listener));
@@ -342,6 +349,8 @@ public class NostrClient {
 
     /**
      * Get the key manager.
+     *
+     * @return the key manager
      */
     public NostrKeyManager getKeyManager() {
         return keyManager;
@@ -349,6 +358,8 @@ public class NostrClient {
 
     /**
      * Get connected relay URLs.
+     *
+     * @return set of connected relay URLs
      */
     public Set<String> getConnectedRelays() {
         Set<String> connected = new HashSet<>();
