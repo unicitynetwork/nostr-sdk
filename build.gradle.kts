@@ -1,6 +1,7 @@
 plugins {
     java
     `maven-publish`
+    id("ru.vyarus.animalsniffer") version "2.0.1"
 }
 
 group = "org.unicitylabs"
@@ -16,11 +17,6 @@ java {
     targetCompatibility = JavaVersion.VERSION_11
     withSourcesJar()
     withJavadocJar()
-
-    // Use Java 17 for compilation, but target Java 11 bytecode
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(17))
-    }
 }
 
 repositories {
@@ -48,6 +44,10 @@ dependencies {
     // Logging facade
     implementation("org.slf4j:slf4j-api:2.0.9")
 
+    // Animal Sniffer signature for Android API 31
+    // Ensures we only use Java 11 APIs compatible with Android
+    signature("com.toasttab.android:gummy-bears-api-31:0.11.0@signature")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.awaitility:awaitility:4.2.0")
@@ -58,6 +58,11 @@ dependencies {
 tasks.withType<JavaCompile> {
     options.release.set(11) // Ensure Java 11 bytecode
     options.encoding = "UTF-8"
+}
+
+// Animal Sniffer configuration
+animalsniffer {
+    // Animal Sniffer is configured via the signature dependency above
 }
 
 tasks.test {
