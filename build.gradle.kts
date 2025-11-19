@@ -4,11 +4,18 @@ plugins {
 }
 
 group = "org.unicitylabs"
-version = "1.0.0"
+// Use version property if provided, otherwise use default
+version = if (project.hasProperty("version")) {
+    project.property("version").toString()
+} else {
+    "1.0-SNAPSHOT"
+}
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
+    withSourcesJar()
+    withJavadocJar()
 
     // Use Java 17 for compilation, but target Java 11 bytecode
     toolchain {
@@ -57,22 +64,39 @@ tasks.test {
     useJUnit()
 }
 
-// Publishing configuration (for Maven/JitPack)
+// Publishing configuration for JitPack
 publishing {
     publications {
         create<MavenPublication>("maven") {
+            groupId = project.group.toString()
+            artifactId = "unicity-nostr-sdk"
+            version = project.version.toString()
+
             from(components["java"])
 
             pom {
                 name.set("Unicity Nostr SDK")
                 description.set("Java SDK for Nostr protocol integration with Unicity blockchain")
-                url.set("https://github.com/unicitynetwork/unicity-nostr-sdk")
+                url.set("https://github.com/unicitynetwork/nostr-sdk")
 
                 licenses {
                     license {
                         name.set("MIT License")
                         url.set("https://opensource.org/licenses/MIT")
                     }
+                }
+
+                developers {
+                    developer {
+                        id.set("unicitynetwork")
+                        name.set("Unicity Labs")
+                    }
+                }
+
+                scm {
+                    connection.set("scm:git:git://github.com/unicitynetwork/nostr-sdk.git")
+                    developerConnection.set("scm:git:ssh://github.com/unicitynetwork/nostr-sdk.git")
+                    url.set("https://github.com/unicitynetwork/nostr-sdk")
                 }
             }
         }
