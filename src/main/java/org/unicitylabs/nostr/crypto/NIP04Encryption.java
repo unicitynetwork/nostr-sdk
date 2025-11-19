@@ -37,7 +37,7 @@ public class NIP04Encryption {
 
     /**
      * Encrypt a message for a recipient using NIP-04.
-     * Automatically compresses large messages (>1KB).
+     * Automatically compresses large messages (&gt;1KB).
      *
      * @param message Plaintext message
      * @param myPrivateKey Sender's 32-byte private key
