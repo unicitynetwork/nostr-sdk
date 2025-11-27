@@ -52,6 +52,9 @@ public final class EventKinds {
     /** Unicity: File metadata for large transfers */
     public static final int FILE_METADATA = 31114;
 
+    /** Unicity: Payment request (request for token transfer) */
+    public static final int PAYMENT_REQUEST = 31115;
+
     // Ranges
 
     /**
@@ -106,6 +109,7 @@ public final class EventKinds {
             case AGENT_LOCATION: return "Agent Location";
             case TOKEN_TRANSFER: return "Token Transfer";
             case FILE_METADATA: return "File Metadata";
+            case PAYMENT_REQUEST: return "Payment Request";
             default: return "Unknown (" + kind + ")";
         }
     }

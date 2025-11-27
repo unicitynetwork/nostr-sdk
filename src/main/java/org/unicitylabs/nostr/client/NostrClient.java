@@ -11,6 +11,7 @@ import org.unicitylabs.nostr.protocol.Event;
 import org.unicitylabs.nostr.protocol.EventKinds;
 import org.unicitylabs.nostr.protocol.Filter;
 import org.unicitylabs.nostr.token.TokenTransferProtocol;
+import org.unicitylabs.nostr.payment.PaymentRequestProtocol;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -208,6 +209,25 @@ public class NostrClient {
     public CompletableFuture<String> sendTokenTransfer(String recipientPubkeyHex, String tokenJson) {
         try {
             Event event = TokenTransferProtocol.createTokenTransferEvent(keyManager, recipientPubkeyHex, tokenJson);
+            return publishEvent(event);
+        } catch (Exception e) {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            future.completeExceptionally(e);
+            return future;
+        }
+    }
+
+    /**
+     * Send a payment request to a target.
+     *
+     * @param targetPubkeyHex Target's Nostr public key (who should pay)
+     * @param request Payment request details
+     * @return CompletableFuture with event ID
+     */
+    public CompletableFuture<String> sendPaymentRequest(String targetPubkeyHex,
+                                                         PaymentRequestProtocol.PaymentRequest request) {
+        try {
+            Event event = PaymentRequestProtocol.createPaymentRequestEvent(keyManager, targetPubkeyHex, request);
             return publishEvent(event);
         } catch (Exception e) {
             CompletableFuture<String> future = new CompletableFuture<>();

@@ -67,6 +67,14 @@ animalsniffer {
 
 tasks.test {
     useJUnit()
+    // Exclude E2E tests from normal build - they require manual interaction
+    exclude("**/*E2ETest*")
+}
+
+// Separate task to run E2E tests explicitly
+tasks.register<Test>("e2eTest") {
+    useJUnit()
+    include("**/*E2ETest*")
 }
 
 // Publishing configuration for JitPack
@@ -74,7 +82,7 @@ publishing {
     publications {
         create<MavenPublication>("maven") {
             groupId = project.group.toString()
-            artifactId = "unicity-nostr-sdk"
+            artifactId = "nostr-sdk"
             version = project.version.toString()
 
             from(components["java"])
