@@ -30,7 +30,7 @@ public class PaymentRequestE2ETest {
 
     // Configuration - can be overridden via system properties
     private static final String NOSTR_RELAY = System.getProperty("nostrRelay",
-            "ws://unicity-nostr-relay-20250927-alb-1919039002.me-central-1.elb.amazonaws.com:8080");
+            "wss://nostr-relay.testnet.unicity.network");
 
     // Solana coin ID from the registry
     private static final String SOLANA_COIN_ID = "dee5f8ce778562eec90e9c38a91296a023210ccc76ff4c29d527ac3eb64ade93";
