@@ -21,6 +21,8 @@ import java.util.*;
  * 3. Alice sends the request to Bob's nametag (resolved to pubkey)
  * 4. Bob's wallet displays the request
  * 5. Bob accepts and sends the token transfer to Alice's nametag
+ *
+ * Note: The coinId precisely identifies the token type, so no separate symbol field is needed.
  */
 public class PaymentRequestProtocol {
 
@@ -35,13 +37,9 @@ public class PaymentRequestProtocol {
         @JsonProperty("amount")
         private long amount;
 
-        /** Coin/token type ID */
+        /** Coin/token type ID - precisely identifies the token type */
         @JsonProperty("coinId")
         private String coinId;
-
-        /** Human-readable coin symbol (e.g., "SOL", "USDC") */
-        @JsonProperty("symbol")
-        private String symbol;
 
         /** Optional message describing the payment */
         @JsonProperty("message")
@@ -57,10 +55,9 @@ public class PaymentRequestProtocol {
 
         public PaymentRequest() {}
 
-        public PaymentRequest(long amount, String coinId, String symbol, String message, String recipientNametag) {
+        public PaymentRequest(long amount, String coinId, String message, String recipientNametag) {
             this.amount = amount;
             this.coinId = coinId;
-            this.symbol = symbol;
             this.message = message;
             this.recipientNametag = recipientNametag;
             this.requestId = UUID.randomUUID().toString().substring(0, 8);
@@ -72,9 +69,6 @@ public class PaymentRequestProtocol {
 
         public String getCoinId() { return coinId; }
         public void setCoinId(String coinId) { this.coinId = coinId; }
-
-        public String getSymbol() { return symbol; }
-        public void setSymbol(String symbol) { this.symbol = symbol; }
 
         public String getMessage() { return message; }
         public void setMessage(String message) { this.message = message; }
@@ -90,7 +84,6 @@ public class PaymentRequestProtocol {
             return "PaymentRequest{" +
                     "amount=" + amount +
                     ", coinId='" + coinId + '\'' +
-                    ", symbol='" + symbol + '\'' +
                     ", message='" + message + '\'' +
                     ", recipientNametag='" + recipientNametag + '\'' +
                     ", requestId='" + requestId + '\'' +
@@ -125,9 +118,6 @@ public class PaymentRequestProtocol {
         tags.add(Arrays.asList("p", targetPubkeyHex));  // Target pubkey (who should pay)
         tags.add(Arrays.asList("type", "payment_request"));
         tags.add(Arrays.asList("amount", String.valueOf(request.getAmount())));
-        if (request.getSymbol() != null) {
-            tags.add(Arrays.asList("symbol", request.getSymbol()));
-        }
         if (request.getRecipientNametag() != null) {
             tags.add(Arrays.asList("recipient", request.getRecipientNametag()));
         }
@@ -197,16 +187,6 @@ public class PaymentRequestProtocol {
             }
         }
         return null;
-    }
-
-    /**
-     * Get symbol from payment request event tags (unencrypted metadata).
-     *
-     * @param event Payment request event
-     * @return Symbol or null if not present
-     */
-    public static String getSymbol(Event event) {
-        return event.getTagValue("symbol");
     }
 
     /**

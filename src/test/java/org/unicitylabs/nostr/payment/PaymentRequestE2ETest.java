@@ -35,6 +35,9 @@ public class PaymentRequestE2ETest {
     // Solana coin ID from the registry
     private static final String SOLANA_COIN_ID = "dee5f8ce778562eec90e9c38a91296a023210ccc76ff4c29d527ac3eb64ade93";
 
+    // Default decimals for display (8 decimals)
+    private static final int DEFAULT_DECIMALS = 8;
+
     /**
      * Send a single payment request to a wallet.
      */
@@ -43,15 +46,16 @@ public class PaymentRequestE2ETest {
         String targetNametag = System.getProperty("targetNametag", "mp-6");
         String recipientNametag = System.getProperty("recipientNametag", "test-requester-" + System.currentTimeMillis() % 10000);
         long amount = Long.parseLong(System.getProperty("amount", "1000000"));
-        String symbol = System.getProperty("symbol", "SOL");
+        int decimals = Integer.parseInt(System.getProperty("decimals", String.valueOf(DEFAULT_DECIMALS)));
         String coinId = System.getProperty("coinId", SOLANA_COIN_ID);
         String message = System.getProperty("message", "Test payment request from E2E test");
 
         printHeader("Payment Request E2E Test");
-        System.out.println("📋 Parameters:");
+        System.out.println("Parameters:");
         System.out.println("   Target nametag: " + targetNametag);
         System.out.println("   Recipient nametag: " + recipientNametag);
-        System.out.println("   Amount: " + formatAmount(amount, symbol));
+        System.out.println("   Amount: " + formatAmount(amount, decimals));
+        System.out.println("   Coin ID: " + coinId.substring(0, 16) + "...");
         System.out.println("   Message: " + message);
         System.out.println("   Relay: " + NOSTR_RELAY);
         System.out.println();
@@ -61,36 +65,36 @@ public class PaymentRequestE2ETest {
 
         try {
             // Connect
-            System.out.println("🔗 Connecting to Nostr relay...");
+            System.out.println("Connecting to Nostr relay...");
             client.connect(NOSTR_RELAY).get(30, TimeUnit.SECONDS);
-            System.out.println("✅ Connected to relay");
+            System.out.println("Connected to relay");
 
             // Publish nametag binding for recipient
             Event bindingEvent = NametagBinding.createBindingEvent(keyManager, recipientNametag, "test-addr");
             client.publishEvent(bindingEvent).get(10, TimeUnit.SECONDS);
-            System.out.println("✅ Recipient nametag published: " + recipientNametag);
+            System.out.println("Recipient nametag published: " + recipientNametag);
             Thread.sleep(1000);
 
             // Resolve target
             String targetPubkey = resolveNametag(client, targetNametag);
 
-            // Send payment request
+            // Send payment request (no symbol - coinId precisely defines the token)
             PaymentRequestProtocol.PaymentRequest request = new PaymentRequestProtocol.PaymentRequest(
-                    amount, coinId, symbol, message, recipientNametag
+                    amount, coinId, message, recipientNametag
             );
-            System.out.println("📤 Sending payment request...");
+            System.out.println("Sending payment request...");
             String eventId = client.sendPaymentRequest(targetPubkey, request).get(10, TimeUnit.SECONDS);
-            System.out.println("✅ Payment request sent! Event ID: " + eventId.substring(0, 16) + "...");
+            System.out.println("Payment request sent! Event ID: " + eventId.substring(0, 16) + "...");
 
             Thread.sleep(2000);
 
             printSuccess("Payment request sent successfully!");
-            System.out.println("📊 Summary:");
+            System.out.println("Summary:");
             System.out.println("   To: " + targetNametag);
-            System.out.println("   Amount: " + formatAmount(amount, symbol));
+            System.out.println("   Amount: " + formatAmount(amount, decimals));
             System.out.println("   From: " + recipientNametag);
             System.out.println();
-            System.out.println("💡 Check the wallet Settings > Payment Requests!");
+            System.out.println("Check the wallet Settings > Payment Requests!");
 
         } finally {
             disconnect(client);
@@ -111,21 +115,21 @@ public class PaymentRequestE2ETest {
 
         try {
             client.connect(NOSTR_RELAY).get(30, TimeUnit.SECONDS);
-            System.out.println("✅ Connected to relay");
+            System.out.println("Connected to relay");
 
             String targetPubkey = resolveNametag(client, targetNametag);
 
+            // requests: amount, message
             String[][] requests = {
-                    {"500000", "SOL", "Coffee - small"},
-                    {"1500000", "SOL", "Lunch payment"},
-                    {"10000000", "SOL", "Monthly subscription"},
+                    {"500000", "Coffee - small"},
+                    {"1500000", "Lunch payment"},
+                    {"10000000", "Monthly subscription"},
             };
 
             for (int i = 0; i < requests.length; i++) {
                 String[] req = requests[i];
                 long amount = Long.parseLong(req[0]);
-                String symbol = req[1];
-                String message = req[2];
+                String message = req[1];
                 String recipientNametag = "merchant-" + (i + 1);
 
                 // Publish nametag for this merchant
@@ -133,12 +137,12 @@ public class PaymentRequestE2ETest {
                 client.publishEvent(bindingEvent).get(10, TimeUnit.SECONDS);
 
                 PaymentRequestProtocol.PaymentRequest request = new PaymentRequestProtocol.PaymentRequest(
-                        amount, SOLANA_COIN_ID, symbol, message, recipientNametag
+                        amount, SOLANA_COIN_ID, message, recipientNametag
                 );
 
-                System.out.println("📤 Sending request " + (i + 1) + ": " + formatAmount(amount, symbol) + " - " + message);
+                System.out.println("Sending request " + (i + 1) + ": " + formatAmount(amount, DEFAULT_DECIMALS) + " - " + message);
                 client.sendPaymentRequest(targetPubkey, request).get(10, TimeUnit.SECONDS);
-                System.out.println("   ✅ Sent (ID: " + request.getRequestId() + ")");
+                System.out.println("   Sent (ID: " + request.getRequestId() + ")");
 
                 Thread.sleep(500);
             }
@@ -159,7 +163,7 @@ public class PaymentRequestE2ETest {
     public void testFullPaymentRequestFlow() throws Exception {
         String targetNametag = System.getProperty("targetNametag", "mp-6");
         long amount = Long.parseLong(System.getProperty("amount", "1000000"));
-        String symbol = System.getProperty("symbol", "SOL");
+        int decimals = Integer.parseInt(System.getProperty("decimals", String.valueOf(DEFAULT_DECIMALS)));
         String coinId = System.getProperty("coinId", SOLANA_COIN_ID);
         int timeoutSeconds = Integer.parseInt(System.getProperty("timeout", "120"));
 
@@ -167,16 +171,17 @@ public class PaymentRequestE2ETest {
         String testAddress = "test-address-" + System.currentTimeMillis();
 
         printHeader("FULL PAYMENT REQUEST E2E TEST");
-        System.out.println("📋 Configuration:");
+        System.out.println("Configuration:");
         System.out.println("   Target wallet nametag: " + targetNametag);
         System.out.println("   Test receiver nametag: " + testNametag);
-        System.out.println("   Amount: " + formatAmount(amount, symbol));
+        System.out.println("   Amount: " + formatAmount(amount, decimals));
+        System.out.println("   Coin ID: " + coinId.substring(0, 16) + "...");
         System.out.println("   Timeout: " + timeoutSeconds + " seconds");
         System.out.println("   Relay: " + NOSTR_RELAY);
         System.out.println();
 
         NostrKeyManager keyManager = NostrKeyManager.generate();
-        System.out.println("🔑 Generated test keypair: " + keyManager.getPublicKeyHex().substring(0, 32) + "...");
+        System.out.println("Generated test keypair: " + keyManager.getPublicKeyHex().substring(0, 32) + "...");
 
         NostrClient client = new NostrClient(keyManager);
         AtomicBoolean tokenReceived = new AtomicBoolean(false);
@@ -186,19 +191,19 @@ public class PaymentRequestE2ETest {
             // Step 1: Connect
             printStep(1, "Connect to Nostr relay");
             client.connect(NOSTR_RELAY).get(30, TimeUnit.SECONDS);
-            System.out.println("✅ Connected to relay");
+            System.out.println("Connected to relay");
 
             // Step 2: Publish nametag
             printStep(2, "Publish test nametag binding");
             Event bindingEvent = NametagBinding.createBindingEvent(keyManager, testNametag, testAddress);
             client.publishEvent(bindingEvent).get(10, TimeUnit.SECONDS);
-            System.out.println("✅ Nametag published: " + testNametag);
+            System.out.println("Nametag published: " + testNametag);
             Thread.sleep(1500);
 
             // Verify nametag
             String resolvedPubkey = client.queryPubkeyByNametag(testNametag).get(10, TimeUnit.SECONDS);
             if (resolvedPubkey != null && resolvedPubkey.equals(keyManager.getPublicKeyHex())) {
-                System.out.println("✅ Nametag verified");
+                System.out.println("Nametag verified");
             }
 
             // Step 3: Subscribe to token transfers
@@ -212,7 +217,7 @@ public class PaymentRequestE2ETest {
 
             final String TOKEN_PREFIX = "token_transfer:";
             client.subscribe("token-transfer", dmFilter, event -> {
-                System.out.println("📨 Received event kind " + event.getKind() + " from: " + event.getPubkey().substring(0, 16) + "...");
+                System.out.println("Received event kind " + event.getKind() + " from: " + event.getPubkey().substring(0, 16) + "...");
                 try {
                     String content = event.getContent();
                     String decrypted;
@@ -230,7 +235,7 @@ public class PaymentRequestE2ETest {
                     System.out.println("   Content preview: " + decrypted.substring(0, Math.min(100, decrypted.length())) + "...");
 
                     if (decrypted.startsWith(TOKEN_PREFIX)) {
-                        System.out.println("✅ TOKEN TRANSFER RECEIVED!");
+                        System.out.println("TOKEN TRANSFER RECEIVED!");
                         receivedTokenJson.set(decrypted);
                         tokenReceived.set(true);
                     }
@@ -239,7 +244,7 @@ public class PaymentRequestE2ETest {
                     e.printStackTrace();
                 }
             });
-            System.out.println("✅ Subscribed to incoming messages");
+            System.out.println("Subscribed to incoming messages");
 
             // Step 4: Resolve target
             printStep(4, "Resolve target wallet nametag");
@@ -249,25 +254,25 @@ public class PaymentRequestE2ETest {
             printStep(5, "Send payment request");
             String message = "E2E Test - please accept!";
             PaymentRequestProtocol.PaymentRequest request = new PaymentRequestProtocol.PaymentRequest(
-                    amount, coinId, symbol, message, testNametag
+                    amount, coinId, message, testNametag
             );
             client.sendPaymentRequest(targetPubkey, request).get(10, TimeUnit.SECONDS);
-            System.out.println("✅ Payment request sent!");
-            System.out.println("   Amount: " + formatAmount(amount, symbol));
+            System.out.println("Payment request sent!");
+            System.out.println("   Amount: " + formatAmount(amount, decimals));
             System.out.println("   Recipient: " + testNametag);
 
             // Step 6: Wait for user action
             printStep(6, "Waiting for wallet to accept payment request");
             System.out.println();
-            System.out.println("╔════════════════════════════════════════════════════════╗");
-            System.out.println("║  🔔 ACTION REQUIRED                                    ║");
-            System.out.println("║                                                        ║");
-            System.out.println("║  1. Open the wallet app                                ║");
-            System.out.println("║  2. Tap Settings (gear) > Payment Requests             ║");
-            System.out.println("║  3. Tap 'Pay' on the request from " + testNametag);
-            System.out.println("║                                                        ║");
-            System.out.println("║  Waiting " + timeoutSeconds + " seconds...                             ║");
-            System.out.println("╚════════════════════════════════════════════════════════╝");
+            System.out.println("+--------------------------------------------------------+");
+            System.out.println("|  ACTION REQUIRED                                       |");
+            System.out.println("|                                                        |");
+            System.out.println("|  1. Open the wallet app                                |");
+            System.out.println("|  2. Tap Settings (gear) > Payment Requests             |");
+            System.out.println("|  3. Tap 'Pay' on the request from " + testNametag);
+            System.out.println("|                                                        |");
+            System.out.println("|  Waiting " + timeoutSeconds + " seconds...                             |");
+            System.out.println("+--------------------------------------------------------+");
             System.out.println();
 
             long startTime = System.currentTimeMillis();
@@ -275,7 +280,7 @@ public class PaymentRequestE2ETest {
             while (!tokenReceived.get() && (System.currentTimeMillis() - startTime) < timeoutMs) {
                 Thread.sleep(2000);
                 int remaining = (int) ((timeoutMs - (System.currentTimeMillis() - startTime)) / 1000);
-                System.out.print("\r⏳ Waiting... " + remaining + "s remaining    ");
+                System.out.print("\rWaiting... " + remaining + "s remaining    ");
             }
             System.out.println();
 
@@ -283,18 +288,18 @@ public class PaymentRequestE2ETest {
             printStep(7, "Verify result");
             if (tokenReceived.get()) {
                 printSuccess("Token transfer received!");
-                System.out.println("📊 Transfer Details:");
+                System.out.println("Transfer Details:");
                 System.out.println("   From: " + targetNametag);
                 System.out.println("   To: " + testNametag);
-                System.out.println("   Amount: " + formatAmount(amount, symbol));
+                System.out.println("   Amount: " + formatAmount(amount, decimals));
 
                 String tokenData = receivedTokenJson.get();
                 if (tokenData != null) {
                     String jsonPart = tokenData.substring(TOKEN_PREFIX.length());
-                    System.out.println("📦 Payload: " + jsonPart.substring(0, Math.min(100, jsonPart.length())) + "...");
+                    System.out.println("Payload: " + jsonPart.substring(0, Math.min(100, jsonPart.length())) + "...");
                 }
             } else {
-                System.out.println("⚠️ TIMEOUT - No token transfer received");
+                System.out.println("TIMEOUT - No token transfer received");
                 System.out.println("   Check wallet for errors or try again.");
             }
 
@@ -306,48 +311,54 @@ public class PaymentRequestE2ETest {
     // ==================== Helper Methods ====================
 
     private String resolveNametag(NostrClient client, String nametag) throws Exception {
-        System.out.println("🔍 Resolving nametag '" + nametag + "'...");
+        System.out.println("Resolving nametag '" + nametag + "'...");
         String pubkey = client.queryPubkeyByNametag(nametag).get(10, TimeUnit.SECONDS);
         if (pubkey == null) {
             throw new RuntimeException("Nametag not found: " + nametag);
         }
-        System.out.println("✅ Resolved to: " + pubkey.substring(0, 16) + "...");
+        System.out.println("Resolved to: " + pubkey.substring(0, 16) + "...");
         return pubkey;
     }
 
     private void disconnect(NostrClient client) {
         System.out.println();
-        System.out.println("🔌 Disconnecting...");
+        System.out.println("Disconnecting...");
         client.disconnect();
-        System.out.println("✅ Disconnected");
+        System.out.println("Disconnected");
     }
 
-    private String formatAmount(long amount, String symbol) {
-        double displayAmount = "SOL".equals(symbol)
-                ? amount / 1_000_000_000.0
-                : amount / 1_000_000.0;
-        return String.format("%.6f %s", displayAmount, symbol);
+    /**
+     * Format amount for display with specified decimals.
+     *
+     * @param amount Amount in smallest units
+     * @param decimals Number of decimal places
+     * @return Formatted amount string
+     */
+    private String formatAmount(long amount, int decimals) {
+        double divisor = Math.pow(10, decimals);
+        double displayAmount = amount / divisor;
+        return String.format("%." + Math.min(decimals, 8) + "f", displayAmount);
     }
 
     private void printHeader(String title) {
-        System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.printf("║   %-59s║%n", title);
-        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println("================================================================");
+        System.out.println("  " + title);
+        System.out.println("================================================================");
         System.out.println();
     }
 
     private void printStep(int step, String description) {
         System.out.println();
-        System.out.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        System.out.println("------------------------------------------------------------");
         System.out.println("STEP " + step + ": " + description);
-        System.out.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        System.out.println("------------------------------------------------------------");
     }
 
     private void printSuccess(String message) {
         System.out.println();
-        System.out.println("╔══════════════════════════════════════════════════════════════╗");
-        System.out.printf("║  ✅ %-57s║%n", message);
-        System.out.println("╚══════════════════════════════════════════════════════════════╝");
+        System.out.println("================================================================");
+        System.out.println("  SUCCESS: " + message);
+        System.out.println("================================================================");
         System.out.println();
     }
 }
