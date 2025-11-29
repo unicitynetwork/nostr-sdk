@@ -301,7 +301,10 @@ public class NIP17Protocol {
      */
     private static long randomizeTimestamp() {
         long now = System.currentTimeMillis() / 1000;
-        long randomOffset = (RANDOM.nextLong() % (2 * TIMESTAMP_RANDOMIZATION)) - TIMESTAMP_RANDOMIZATION;
+        // Range is 4 days in seconds (345600), fits in int
+        // Using nextInt(bound) guarantees non-negative result in [0, bound)
+        int range = (int) (2 * TIMESTAMP_RANDOMIZATION);
+        long randomOffset = RANDOM.nextInt(range) - TIMESTAMP_RANDOMIZATION;
         return now + randomOffset;
     }
 
