@@ -4,10 +4,12 @@ Java SDK for Nostr protocol integration with Unicity blockchain applications.
 
 ## Features
 
+- **NIP-17 Private Messages**: Gift-wrapped private direct messages with sender anonymity
+- **NIP-44 Encryption**: Modern ChaCha20-Poly1305 AEAD encryption with HKDF key derivation
 - **Token Transfers**: Send and receive Unicity tokens via Nostr encrypted messages
 - **Payment Requests**: Request payments from other users via encrypted Nostr messages
 - **Nametag Bindings**: Map Unicity nametags to Nostr public keys for discovery
-- **Encrypted Messaging**: NIP-04 encrypted direct messages with automatic compression
+- **NIP-04 Encryption**: Legacy AES-CBC encrypted direct messages with automatic compression
 - **Location Broadcasting**: Agent location discovery for P2P networks
 - **Profile Management**: Standard Nostr profiles (NIP-01)
 - **Multi-Relay Support**: Connect to multiple Nostr relays simultaneously
@@ -28,7 +30,7 @@ repositories {
 }
 
 dependencies {
-    implementation("org.unicitylabs:nostr-sdk:0.0.3")
+    implementation("org.unicitylabs:nostr-sdk:0.0.5")
 }
 ```
 
@@ -47,7 +49,7 @@ Add JitPack repository to your `pom.xml`:
 <dependency>
     <groupId>org.unicitylabs</groupId>
     <artifactId>nostr-sdk</artifactId>
-    <version>0.0.3</version>
+    <version>0.0.5</version>
 </dependency>
 ```
 
@@ -56,7 +58,7 @@ Add JitPack repository to your `pom.xml`:
 For local development, publish to mavenLocal:
 
 ```bash
-./gradlew publishToMavenLocal -Pversion=0.0.3
+./gradlew publishToMavenLocal -Pversion=0.0.5
 ```
 
 Then use:
@@ -67,7 +69,7 @@ repositories {
 }
 
 dependencies {
-    implementation("org.unicitylabs:nostr-sdk:0.0.3")
+    implementation("org.unicitylabs:nostr-sdk:0.0.5")
 }
 ```
 
@@ -90,7 +92,7 @@ NostrClient client = new NostrClient(keyManager);
 client.connect("wss://relay.example.com").get();
 ```
 
-### Send Encrypted Message
+### Send Encrypted Message (NIP-04 Legacy)
 
 ```java
 String recipientPubkey = "...";
@@ -100,6 +102,74 @@ client.publishEncryptedMessage(recipientPubkey, message)
     .thenAccept(eventId -> {
         System.out.println("Message sent: " + eventId);
     });
+```
+
+### NIP-17 Private Messages (Recommended)
+
+NIP-17 provides enhanced privacy using gift-wrapping with ephemeral keys:
+
+```java
+// Send private message by nametag (auto-resolves to pubkey)
+client.sendPrivateMessageToNametag("alice", "Hello Alice!", "bob")  // from bob
+    .thenAccept(eventId -> {
+        System.out.println("Message sent: " + eventId);
+    });
+
+// Or send by pubkey directly with sender identification
+String recipientPubkey = "...";
+String senderNametag = "bob";  // Sender's nametag for receiver to identify
+client.sendPrivateMessage(recipientPubkey, "Hello!", null, senderNametag)
+    .thenAccept(eventId -> {
+        System.out.println("Message sent: " + eventId);
+    });
+
+// Send reply to a previous message
+String replyToEventId = "..."; // Event ID of message being replied to
+client.sendPrivateMessage(recipientPubkey, "This is a reply!", replyToEventId, senderNametag)
+    .thenAccept(eventId -> {
+        System.out.println("Reply sent: " + eventId);
+    });
+
+// Send read receipt
+String originalEventId = "..."; // Event ID of message being acknowledged
+client.sendReadReceipt(senderPubkey, originalEventId)
+    .thenAccept(eventId -> {
+        System.out.println("Read receipt sent: " + eventId);
+    });
+```
+
+Receive and unwrap private messages:
+
+```java
+// Subscribe to gift-wrapped messages
+Filter filter = Filter.builder()
+    .kinds(EventKinds.GIFT_WRAP)
+    .pTags(keyManager.getPublicKeyHex())
+    .build();
+
+client.subscribe("private-messages", filter, event -> {
+    try {
+        PrivateMessage message = client.unwrapPrivateMessage(event);
+
+        if (message.isChatMessage()) {
+            // Get sender's nametag (if included) for user-friendly display
+            String senderNametag = message.getSenderNametag();
+            if (senderNametag != null) {
+                System.out.println("From: " + senderNametag);
+            } else {
+                System.out.println("From: " + message.getSenderPubkey());
+            }
+            System.out.println("Content: " + message.getContent());
+
+            // Send read receipt
+            client.sendReadReceipt(message.getSenderPubkey(), message.getEventId());
+        } else if (message.isReadReceipt()) {
+            System.out.println("Read receipt for: " + message.getReplyToEventId());
+        }
+    } catch (Exception e) {
+        // Message not for us or decryption failed
+    }
+});
 ```
 
 ### Subscribe to Events
@@ -226,7 +296,8 @@ The SDK is organized into several packages:
 |---------|-------------|
 | `org.unicitylabs.nostr.client` | Main NostrClient and relay management |
 | `org.unicitylabs.nostr.protocol` | Nostr protocol structures (Event, Filter, EventKinds) |
-| `org.unicitylabs.nostr.crypto` | Cryptographic operations (Schnorr, NIP-04, Bech32) |
+| `org.unicitylabs.nostr.crypto` | Cryptographic operations (Schnorr, NIP-04, NIP-44, Bech32) |
+| `org.unicitylabs.nostr.messaging` | NIP-17 private direct messages with gift-wrapping |
 | `org.unicitylabs.nostr.nametag` | Nametag binding protocol with privacy-preserving hashing |
 | `org.unicitylabs.nostr.token` | Token transfer protocol with compression |
 | `org.unicitylabs.nostr.payment` | Payment request protocol |
@@ -238,6 +309,10 @@ The SDK is organized into several packages:
 | 0 | PROFILE | User profile metadata (NIP-01) |
 | 1 | TEXT_NOTE | Plain text note (NIP-01) |
 | 4 | ENCRYPTED_DM | Encrypted direct message (NIP-04) |
+| 13 | SEAL | Encrypted seal for gift-wrapping (NIP-17) |
+| 14 | CHAT_MESSAGE | Private direct message rumor (NIP-17) |
+| 15 | READ_RECEIPT | Read receipt rumor (NIP-17) |
+| 1059 | GIFT_WRAP | Gift-wrapped message (NIP-17) |
 | 30078 | APP_DATA | Nametag binding (parameterized replaceable) |
 | 31111 | AGENT_PROFILE | Agent profile information |
 | 31112 | AGENT_LOCATION | Agent GPS location broadcast |
@@ -246,6 +321,40 @@ The SDK is organized into several packages:
 | 31115 | PAYMENT_REQUEST | Payment request |
 
 ## Protocol Details
+
+### NIP-17 Private Direct Messages
+
+NIP-17 implements private direct messages with sender anonymity using a three-layer gift-wrapping approach:
+
+1. **Rumor** (kind 14 or 15) - Unsigned event with actual message content and real timestamp
+2. **Seal** (kind 13) - Signed by sender, encrypts the rumor with NIP-44, randomized timestamp
+3. **Gift Wrap** (kind 1059) - Signed by ephemeral key, encrypts the seal with NIP-44, randomized timestamp
+
+**Benefits:**
+- Sender anonymity (gift wrap uses ephemeral keys)
+- End-to-end encryption with modern NIP-44 (ChaCha20-Poly1305)
+- Read receipts support
+- Message threading with reply references
+- Timestamp randomization on outer layers for metadata privacy
+- Sender nametag included for user-friendly identification
+- Nametag-based addressing with auto-resolution
+
+**Message Types:**
+- **Kind 14 (CHAT_MESSAGE)**: Regular private message
+- **Kind 15 (READ_RECEIPT)**: Acknowledgment that a message was read
+
+**Rumor Tags:**
+- `p` - Recipient public key
+- `e` - Reply-to event ID (optional)
+- `nametag` - Sender's nametag for identification (optional)
+
+### NIP-44 Encryption
+
+Modern authenticated encryption using:
+- **ECDH**: secp256k1 shared secret derivation
+- **HKDF**: Key derivation with sorted public keys as salt
+- **ChaCha20-Poly1305**: AEAD cipher with 12-byte nonce
+- **Padding**: Power-of-2 chunk padding to hide message length
 
 ### Token Transfer Protocol
 
@@ -308,9 +417,22 @@ Unit tests run automatically during build:
 ./gradlew build
 ```
 
-### E2E Tests (Manual)
+### E2E Tests
 
-E2E tests require manual interaction and are excluded from normal builds. Run them explicitly:
+E2E tests run against a real Nostr relay:
+
+```bash
+# Run NIP-17 private messaging E2E tests
+./gradlew e2eTest --tests "NIP17E2ETest"
+
+# Use a custom relay
+./gradlew e2eTest --tests "NIP17E2ETest" \
+    -DnostrRelay=wss://your-relay.com
+```
+
+### Payment Request E2E Tests (Manual)
+
+Payment request E2E tests require manual wallet interaction:
 
 ```bash
 # Send a single payment request

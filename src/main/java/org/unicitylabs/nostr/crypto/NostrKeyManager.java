@@ -253,6 +253,69 @@ public class NostrKeyManager {
         return NIP04Encryption.deriveSharedSecret(privateKey, theirPublicKey);
     }
 
+    // Encryption operations (NIP-44)
+
+    /**
+     * Encrypt a message for a recipient using NIP-44.
+     * Uses XChaCha20-Poly1305 with HKDF key derivation.
+     *
+     * @param message Plaintext message
+     * @param recipientPublicKey Recipient's 32-byte x-only public key
+     * @return Base64-encoded encrypted content
+     * @throws Exception if encryption fails
+     */
+    public String encryptNip44(String message, byte[] recipientPublicKey) throws Exception {
+        return NIP44Encryption.encrypt(message, privateKey, recipientPublicKey);
+    }
+
+    /**
+     * Encrypt a message for a recipient using NIP-44 (hex public key).
+     *
+     * @param message Plaintext message
+     * @param recipientPublicKeyHex Recipient's hex-encoded public key
+     * @return Base64-encoded encrypted content
+     * @throws Exception if encryption fails
+     */
+    public String encryptNip44Hex(String message, String recipientPublicKeyHex) throws Exception {
+        return encryptNip44(message, Hex.decodeHex(recipientPublicKeyHex.toCharArray()));
+    }
+
+    /**
+     * Decrypt a NIP-44 encrypted message.
+     *
+     * @param encryptedContent Base64-encoded encrypted content
+     * @param senderPublicKey Sender's 32-byte x-only public key
+     * @return Decrypted plaintext message
+     * @throws Exception if decryption fails
+     */
+    public String decryptNip44(String encryptedContent, byte[] senderPublicKey) throws Exception {
+        return NIP44Encryption.decrypt(encryptedContent, privateKey, senderPublicKey);
+    }
+
+    /**
+     * Decrypt a NIP-44 encrypted message (hex public key).
+     *
+     * @param encryptedContent Base64-encoded encrypted content
+     * @param senderPublicKeyHex Sender's hex-encoded public key
+     * @return Decrypted plaintext message
+     * @throws Exception if decryption fails
+     */
+    public String decryptNip44Hex(String encryptedContent, String senderPublicKeyHex) throws Exception {
+        return decryptNip44(encryptedContent, Hex.decodeHex(senderPublicKeyHex.toCharArray()));
+    }
+
+    /**
+     * Derive NIP-44 conversation key with another party.
+     * Uses ECDH + HKDF with sorted public keys as salt.
+     *
+     * @param theirPublicKey Their 32-byte x-only public key
+     * @return 32-byte conversation key
+     * @throws Exception if key derivation fails
+     */
+    public byte[] deriveConversationKey(byte[] theirPublicKey) throws Exception {
+        return NIP44Encryption.deriveConversationKey(privateKey, theirPublicKey);
+    }
+
     // Utility methods
 
     /**

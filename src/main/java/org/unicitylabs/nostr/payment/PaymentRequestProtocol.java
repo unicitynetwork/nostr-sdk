@@ -1,5 +1,6 @@
 package org.unicitylabs.nostr.payment;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.codec.binary.Hex;
@@ -32,6 +33,7 @@ public class PaymentRequestProtocol {
     /**
      * Payment request data.
      */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PaymentRequest {
         /** Amount in smallest units (e.g., lamports for SOL) */
         @JsonProperty("amount")

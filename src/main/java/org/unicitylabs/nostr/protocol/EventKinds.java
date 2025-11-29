@@ -26,6 +26,15 @@ public final class EventKinds {
     /** NIP-09: Event deletion */
     public static final int DELETION = 5;
 
+    /** NIP-17: Seal (signed, encrypted rumor) */
+    public static final int SEAL = 13;
+
+    /** NIP-17: Private chat message (rumor - unsigned inner event) */
+    public static final int CHAT_MESSAGE = 14;
+
+    /** NIP-17: Read receipt (rumor kind) */
+    public static final int READ_RECEIPT = 15;
+
     /** NIP-25: Reactions */
     public static final int REACTION = 7;
 
@@ -101,6 +110,9 @@ public final class EventKinds {
             case CONTACTS: return "Contacts";
             case ENCRYPTED_DM: return "Encrypted DM";
             case DELETION: return "Deletion";
+            case SEAL: return "Seal";
+            case CHAT_MESSAGE: return "Chat Message";
+            case READ_RECEIPT: return "Read Receipt";
             case REACTION: return "Reaction";
             case GIFT_WRAP: return "Gift Wrap";
             case RELAY_LIST: return "Relay List";

@@ -12,6 +12,8 @@ import org.unicitylabs.nostr.protocol.EventKinds;
 import org.unicitylabs.nostr.protocol.Filter;
 import org.unicitylabs.nostr.token.TokenTransferProtocol;
 import org.unicitylabs.nostr.payment.PaymentRequestProtocol;
+import org.unicitylabs.nostr.messaging.NIP17Protocol;
+import org.unicitylabs.nostr.messaging.PrivateMessage;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -197,6 +199,117 @@ public class NostrClient {
             future.completeExceptionally(e);
             return future;
         }
+    }
+
+    /**
+     * Send a private direct message using NIP-17 gift wrapping.
+     * Uses NIP-44 encryption and ephemeral keys for sender anonymity.
+     *
+     * @param recipientPubkeyHex Recipient's public key (hex)
+     * @param message Plaintext message
+     * @return CompletableFuture with gift wrap event ID
+     */
+    public CompletableFuture<String> sendPrivateMessage(String recipientPubkeyHex, String message) {
+        return sendPrivateMessage(recipientPubkeyHex, message, null);
+    }
+
+    /**
+     * Send a private direct message with optional reply reference.
+     *
+     * @param recipientPubkeyHex Recipient's public key (hex)
+     * @param message Plaintext message
+     * @param replyToEventId Optional event ID to reply to
+     * @return CompletableFuture with gift wrap event ID
+     */
+    public CompletableFuture<String> sendPrivateMessage(String recipientPubkeyHex, String message,
+                                                         String replyToEventId) {
+        return sendPrivateMessage(recipientPubkeyHex, message, replyToEventId, null);
+    }
+
+    /**
+     * Send a private direct message with sender nametag identification.
+     *
+     * @param recipientPubkeyHex Recipient's public key (hex)
+     * @param message Plaintext message
+     * @param replyToEventId Optional event ID to reply to
+     * @param senderNametag Optional sender's nametag (Unicity ID) for identification
+     * @return CompletableFuture with gift wrap event ID
+     */
+    public CompletableFuture<String> sendPrivateMessage(String recipientPubkeyHex, String message,
+                                                         String replyToEventId, String senderNametag) {
+        try {
+            Event giftWrap = NIP17Protocol.createGiftWrap(keyManager, recipientPubkeyHex, message,
+                    replyToEventId, senderNametag);
+            return publishEvent(giftWrap);
+        } catch (Exception e) {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            future.completeExceptionally(e);
+            return future;
+        }
+    }
+
+    /**
+     * Send a private message to a recipient identified by their nametag.
+     * Resolves the nametag to a pubkey automatically.
+     *
+     * @param recipientNametag Recipient's nametag (Unicity ID)
+     * @param message Plaintext message
+     * @param senderNametag Optional sender's nametag for identification
+     * @return CompletableFuture with gift wrap event ID
+     */
+    public CompletableFuture<String> sendPrivateMessageToNametag(String recipientNametag, String message,
+                                                                   String senderNametag) {
+        return queryPubkeyByNametag(recipientNametag)
+            .thenCompose(pubkey -> {
+                if (pubkey == null) {
+                    CompletableFuture<String> failed = new CompletableFuture<>();
+                    failed.completeExceptionally(
+                        new Exception("Nametag not found: " + recipientNametag));
+                    return failed;
+                }
+                return sendPrivateMessage(pubkey, message, null, senderNametag);
+            });
+    }
+
+    /**
+     * Send a private message to a recipient identified by their nametag.
+     * Resolves the nametag to a pubkey automatically.
+     *
+     * @param recipientNametag Recipient's nametag (Unicity ID)
+     * @param message Plaintext message
+     * @return CompletableFuture with gift wrap event ID
+     */
+    public CompletableFuture<String> sendPrivateMessageToNametag(String recipientNametag, String message) {
+        return sendPrivateMessageToNametag(recipientNametag, message, null);
+    }
+
+    /**
+     * Send a read receipt for a message.
+     *
+     * @param recipientPubkeyHex Original sender's public key (who will receive the receipt)
+     * @param messageEventId Event ID of the message being acknowledged
+     * @return CompletableFuture with gift wrap event ID
+     */
+    public CompletableFuture<String> sendReadReceipt(String recipientPubkeyHex, String messageEventId) {
+        try {
+            Event giftWrap = NIP17Protocol.createReadReceipt(keyManager, recipientPubkeyHex, messageEventId);
+            return publishEvent(giftWrap);
+        } catch (Exception e) {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            future.completeExceptionally(e);
+            return future;
+        }
+    }
+
+    /**
+     * Unwrap a received gift-wrapped private message.
+     *
+     * @param giftWrap Gift wrap event (kind 1059)
+     * @return Parsed private message
+     * @throws Exception if unwrapping fails
+     */
+    public PrivateMessage unwrapPrivateMessage(Event giftWrap) throws Exception {
+        return NIP17Protocol.unwrap(giftWrap, keyManager);
     }
 
     /**
