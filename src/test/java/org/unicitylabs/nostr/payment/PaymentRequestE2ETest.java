@@ -7,6 +7,7 @@ import org.unicitylabs.nostr.nametag.NametagBinding;
 import org.unicitylabs.nostr.protocol.Event;
 import org.unicitylabs.nostr.protocol.EventKinds;
 import org.unicitylabs.nostr.protocol.Filter;
+import org.unicitylabs.nostr.token.TokenTransferProtocol;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -18,13 +19,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * Usage:
  *   # Send a single payment request
- *   ./gradlew e2eTest --tests "PaymentRequestE2ETest.testSendPaymentRequest" -DtargetNametag=mp-6
+ *   ./gradlew e2eTest --tests "PaymentRequestE2ETest.testSendPaymentRequest" -DtargetNametag=mp-9
  *
  *   # Send multiple payment requests
- *   ./gradlew e2eTest --tests "PaymentRequestE2ETest.testSendMultiplePaymentRequests" -DtargetNametag=mp-6
+ *   ./gradlew e2eTest --tests "PaymentRequestE2ETest.testSendMultiplePaymentRequests" -DtargetNametag=mp-9
  *
  *   # Full flow with token transfer verification (requires manual wallet interaction)
- *   ./gradlew e2eTest --tests "PaymentRequestE2ETest.testFullPaymentRequestFlow" -DtargetNametag=mp-6
+ *   ./gradlew e2eTest --tests "PaymentRequestE2ETest.testFullPaymentRequestFlow" -DtargetNametag=mp-9
  */
 public class PaymentRequestE2ETest {
 
@@ -43,7 +44,7 @@ public class PaymentRequestE2ETest {
      */
     @Test
     public void testSendPaymentRequest() throws Exception {
-        String targetNametag = System.getProperty("targetNametag", "mp-6");
+        String targetNametag = System.getProperty("targetNametag", "mp-9");
         String recipientNametag = System.getProperty("recipientNametag", "test-requester-" + System.currentTimeMillis() % 10000);
         long amount = Long.parseLong(System.getProperty("amount", "1000000"));
         int decimals = Integer.parseInt(System.getProperty("decimals", String.valueOf(DEFAULT_DECIMALS)));
@@ -106,7 +107,7 @@ public class PaymentRequestE2ETest {
      */
     @Test
     public void testSendMultiplePaymentRequests() throws Exception {
-        String targetNametag = System.getProperty("targetNametag", "mp-6");
+        String targetNametag = System.getProperty("targetNametag", "mp-9");
 
         printHeader("Multiple Payment Requests Test");
 
@@ -161,8 +162,8 @@ public class PaymentRequestE2ETest {
      */
     @Test
     public void testFullPaymentRequestFlow() throws Exception {
-        String targetNametag = System.getProperty("targetNametag", "mp-6");
-        long amount = Long.parseLong(System.getProperty("amount", "1000000"));
+        String targetNametag = System.getProperty("targetNametag", "mp-9");
+        long amount = Long.parseLong(System.getProperty("amount", "100000"));
         int decimals = Integer.parseInt(System.getProperty("decimals", String.valueOf(DEFAULT_DECIMALS)));
         String coinId = System.getProperty("coinId", SOLANA_COIN_ID);
         int timeoutSeconds = Integer.parseInt(System.getProperty("timeout", "120"));
@@ -186,6 +187,8 @@ public class PaymentRequestE2ETest {
         NostrClient client = new NostrClient(keyManager);
         AtomicBoolean tokenReceived = new AtomicBoolean(false);
         AtomicReference<String> receivedTokenJson = new AtomicReference<>(null);
+        AtomicReference<String> receivedReplyToEventId = new AtomicReference<>(null);
+        AtomicReference<Event> receivedEvent = new AtomicReference<>(null);
 
         try {
             // Step 1: Connect
@@ -237,6 +240,17 @@ public class PaymentRequestE2ETest {
                     if (decrypted.startsWith(TOKEN_PREFIX)) {
                         System.out.println("TOKEN TRANSFER RECEIVED!");
                         receivedTokenJson.set(decrypted);
+                        receivedEvent.set(event);
+
+                        // Extract reply-to event ID for payment request correlation
+                        String replyToId = TokenTransferProtocol.getReplyToEventId(event);
+                        if (replyToId != null) {
+                            receivedReplyToEventId.set(replyToId);
+                            System.out.println("   Reply-to event ID (e tag): " + replyToId.substring(0, 16) + "...");
+                        } else {
+                            System.out.println("   No reply-to event ID (e tag) found");
+                        }
+
                         tokenReceived.set(true);
                     }
                 } catch (Exception e) {
@@ -256,8 +270,9 @@ public class PaymentRequestE2ETest {
             PaymentRequestProtocol.PaymentRequest request = new PaymentRequestProtocol.PaymentRequest(
                     amount, coinId, message, testNametag
             );
-            client.sendPaymentRequest(targetPubkey, request).get(10, TimeUnit.SECONDS);
+            String paymentRequestEventId = client.sendPaymentRequest(targetPubkey, request).get(10, TimeUnit.SECONDS);
             System.out.println("Payment request sent!");
+            System.out.println("   Event ID: " + paymentRequestEventId.substring(0, 16) + "...");
             System.out.println("   Amount: " + formatAmount(amount, decimals));
             System.out.println("   Recipient: " + testNametag);
 
@@ -297,6 +312,30 @@ public class PaymentRequestE2ETest {
                 if (tokenData != null) {
                     String jsonPart = tokenData.substring(TOKEN_PREFIX.length());
                     System.out.println("Payload: " + jsonPart.substring(0, Math.min(100, jsonPart.length())) + "...");
+                }
+
+                // Step 8: Verify payment request correlation (e tag)
+                printStep(8, "Verify payment request correlation (e tag)");
+                String replyToId = receivedReplyToEventId.get();
+                if (replyToId != null) {
+                    System.out.println("Token transfer contains reply-to event ID:");
+                    System.out.println("   Expected (payment request): " + paymentRequestEventId);
+                    System.out.println("   Actual (e tag in transfer): " + replyToId);
+
+                    if (paymentRequestEventId.equals(replyToId)) {
+                        printSuccess("CORRELATION VERIFIED!");
+                        System.out.println("The token transfer correctly references the payment request.");
+                        System.out.println("Server can match this transfer to the original request using:");
+                        System.out.println("   TokenTransferProtocol.getReplyToEventId(event)");
+                    } else {
+                        System.out.println("WARNING: Event IDs do not match!");
+                        System.out.println("   This may indicate an issue with the wallet implementation.");
+                    }
+                } else {
+                    System.out.println("WARNING: No reply-to event ID (e tag) found in token transfer.");
+                    System.out.println("   The wallet should include the payment request event ID");
+                    System.out.println("   as an 'e' tag when responding to payment requests.");
+                    System.out.println("   Expected: [\"e\", \"" + paymentRequestEventId.substring(0, 16) + "...\", \"\", \"reply\"]");
                 }
             } else {
                 System.out.println("TIMEOUT - No token transfer received");

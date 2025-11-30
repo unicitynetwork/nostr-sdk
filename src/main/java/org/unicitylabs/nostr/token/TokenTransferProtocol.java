@@ -34,6 +34,25 @@ public class TokenTransferProtocol {
      */
     public static Event createTokenTransferEvent(NostrKeyManager keyManager, String recipientPubkeyHex,
                                                 String tokenJson, Long amount, String symbol) throws Exception {
+        return createTokenTransferEvent(keyManager, recipientPubkeyHex, tokenJson, amount, symbol, null);
+    }
+
+    /**
+     * Create a token transfer event with optional reply-to reference.
+     * Encrypts the token JSON with NIP-04 (with compression for large payloads).
+     *
+     * @param keyManager the key manager for signing
+     * @param recipientPubkeyHex Recipient's public key (hex)
+     * @param tokenJson Unicity SDK token JSON
+     * @param amount Optional amount for metadata
+     * @param symbol Optional symbol for metadata
+     * @param replyToEventId Optional event ID this transfer is responding to (e.g., payment request)
+     * @return Signed token transfer event
+     * @throws Exception if event creation or signing fails
+     */
+    public static Event createTokenTransferEvent(NostrKeyManager keyManager, String recipientPubkeyHex,
+                                                String tokenJson, Long amount, String symbol,
+                                                String replyToEventId) throws Exception {
         long createdAt = System.currentTimeMillis() / 1000;
 
         // Create content: "token_transfer:{tokenJson}"
@@ -51,6 +70,11 @@ public class TokenTransferProtocol {
         if (amount != null && symbol != null) {
             tags.add(Arrays.asList("amount", amount.toString()));
             tags.add(Arrays.asList("symbol", symbol));
+        }
+
+        // Add optional reply-to event reference (for payment request correlation)
+        if (replyToEventId != null && !replyToEventId.isEmpty()) {
+            tags.add(Arrays.asList("e", replyToEventId, "", "reply"));
         }
 
         // Create event
@@ -154,6 +178,17 @@ public class TokenTransferProtocol {
      */
     public static String getSymbol(Event event) {
         return event.getTagValue("symbol");
+    }
+
+    /**
+     * Get the reply-to event ID from token transfer event.
+     * Used to correlate token transfers with payment requests.
+     *
+     * @param event the token transfer event
+     * @return the referenced event ID or null if not present
+     */
+    public static String getReplyToEventId(Event event) {
+        return event.getTagValue("e");
     }
 
     /**

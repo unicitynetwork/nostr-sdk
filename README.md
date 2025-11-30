@@ -197,6 +197,18 @@ client.sendTokenTransfer(recipientPubkey, tokenJson)
         System.out.println("Token sent: " + eventId);
     });
 
+// Send token in response to a payment request (correlates transfer with request)
+String paymentRequestEventId = "..."; // Event ID of the original payment request
+Event event = TokenTransferProtocol.createTokenTransferEvent(
+    keyManager,
+    recipientPubkey,
+    tokenJson,
+    amount,           // Optional amount for metadata
+    symbol,           // Optional symbol for metadata
+    paymentRequestEventId  // Links this transfer to the payment request
+);
+client.publishEvent(event);
+
 // SDK automatically:
 // - Adds "token_transfer:" prefix
 // - Creates kind 31113 (TOKEN_TRANSFER) event
@@ -363,6 +375,33 @@ Modern authenticated encryption using:
 - **Encryption**: NIP-04
 - **Compression**: GZIP (auto for payloads > 1KB)
 - **Content**: `token_transfer:{sourceToken, transferTx}`
+- **Optional Tags**:
+  - `["e", "<event_id>", "", "reply"]` - References a payment request event
+
+#### Correlating Token Transfers with Payment Requests
+
+When a user pays in response to a payment request, include the request's event ID:
+
+```java
+// Server: Send payment request, track by event ID
+Map<String, PaymentRequest> pendingRequests = new ConcurrentHashMap<>();
+Event requestEvent = PaymentRequestProtocol.createPaymentRequestEvent(keyManager, targetPubkey, request);
+client.publishEvent(requestEvent);
+pendingRequests.put(requestEvent.getId(), request);
+
+// Server: Receive token transfer and correlate
+client.subscribe(tokenFilter, event -> {
+    String replyToId = TokenTransferProtocol.getReplyToEventId(event);
+    if (replyToId != null) {
+        PaymentRequest originalRequest = pendingRequests.get(replyToId);
+        if (originalRequest != null) {
+            // Payment matched to request!
+            processPayment(originalRequest, event);
+            pendingRequests.remove(replyToId);
+        }
+    }
+});
+```
 
 ### Payment Request Protocol
 

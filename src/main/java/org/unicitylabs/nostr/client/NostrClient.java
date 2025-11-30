@@ -320,8 +320,24 @@ public class NostrClient {
      * @return CompletableFuture with event ID
      */
     public CompletableFuture<String> sendTokenTransfer(String recipientPubkeyHex, String tokenJson) {
+        return sendTokenTransfer(recipientPubkeyHex, tokenJson, null, null, null);
+    }
+
+    /**
+     * Send a token transfer to a recipient in response to a payment request.
+     *
+     * @param recipientPubkeyHex Recipient's Nostr public key (hex)
+     * @param tokenJson Unicity SDK token JSON
+     * @param amount Optional amount for metadata
+     * @param symbol Optional symbol for metadata
+     * @param replyToEventId Optional event ID this transfer is responding to (e.g., payment request)
+     * @return CompletableFuture with event ID
+     */
+    public CompletableFuture<String> sendTokenTransfer(String recipientPubkeyHex, String tokenJson,
+                                                        Long amount, String symbol, String replyToEventId) {
         try {
-            Event event = TokenTransferProtocol.createTokenTransferEvent(keyManager, recipientPubkeyHex, tokenJson);
+            Event event = TokenTransferProtocol.createTokenTransferEvent(
+                keyManager, recipientPubkeyHex, tokenJson, amount, symbol, replyToEventId);
             return publishEvent(event);
         } catch (Exception e) {
             CompletableFuture<String> future = new CompletableFuture<>();
