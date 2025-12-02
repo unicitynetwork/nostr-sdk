@@ -7,6 +7,7 @@ import org.unicitylabs.nostr.crypto.NostrKeyManager;
 import org.unicitylabs.nostr.protocol.Event;
 import org.unicitylabs.nostr.protocol.EventKinds;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
@@ -27,13 +28,13 @@ public class TokenTransferProtocol {
      * @param keyManager the key manager for signing
      * @param recipientPubkeyHex Recipient's public key (hex)
      * @param tokenJson Unicity SDK token JSON
-     * @param amount Optional amount for metadata
+     * @param amount Optional amount for metadata (BigInteger for large values)
      * @param symbol Optional symbol for metadata
      * @return Signed token transfer event
      * @throws Exception if event creation or signing fails
      */
     public static Event createTokenTransferEvent(NostrKeyManager keyManager, String recipientPubkeyHex,
-                                                String tokenJson, Long amount, String symbol) throws Exception {
+                                                String tokenJson, BigInteger amount, String symbol) throws Exception {
         return createTokenTransferEvent(keyManager, recipientPubkeyHex, tokenJson, amount, symbol, null);
     }
 
@@ -44,14 +45,14 @@ public class TokenTransferProtocol {
      * @param keyManager the key manager for signing
      * @param recipientPubkeyHex Recipient's public key (hex)
      * @param tokenJson Unicity SDK token JSON
-     * @param amount Optional amount for metadata
+     * @param amount Optional amount for metadata (BigInteger for large values)
      * @param symbol Optional symbol for metadata
      * @param replyToEventId Optional event ID this transfer is responding to (e.g., payment request)
      * @return Signed token transfer event
      * @throws Exception if event creation or signing fails
      */
     public static Event createTokenTransferEvent(NostrKeyManager keyManager, String recipientPubkeyHex,
-                                                String tokenJson, Long amount, String symbol,
+                                                String tokenJson, BigInteger amount, String symbol,
                                                 String replyToEventId) throws Exception {
         long createdAt = System.currentTimeMillis() / 1000;
 
@@ -158,11 +159,11 @@ public class TokenTransferProtocol {
      * @param event the token transfer event
      * @return the amount or null if not present
      */
-    public static Long getAmount(Event event) {
+    public static BigInteger getAmount(Event event) {
         String amountStr = event.getTagValue("amount");
         if (amountStr != null) {
             try {
-                return Long.parseLong(amountStr);
+                return new BigInteger(amountStr);
             } catch (NumberFormatException e) {
                 return null;
             }

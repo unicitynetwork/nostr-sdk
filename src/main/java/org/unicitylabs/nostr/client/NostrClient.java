@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.unicitylabs.nostr.crypto.NostrKeyManager;
 import org.unicitylabs.nostr.nametag.NametagBinding;
+import org.unicitylabs.nostr.nametag.NametagUtils;
 import org.unicitylabs.nostr.protocol.Event;
 import org.unicitylabs.nostr.protocol.EventKinds;
 import org.unicitylabs.nostr.protocol.Filter;
@@ -15,6 +16,7 @@ import org.unicitylabs.nostr.payment.PaymentRequestProtocol;
 import org.unicitylabs.nostr.messaging.NIP17Protocol;
 import org.unicitylabs.nostr.messaging.PrivateMessage;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
@@ -328,13 +330,13 @@ public class NostrClient {
      *
      * @param recipientPubkeyHex Recipient's Nostr public key (hex)
      * @param tokenJson Unicity SDK token JSON
-     * @param amount Optional amount for metadata
+     * @param amount Optional amount for metadata (BigInteger for large values)
      * @param symbol Optional symbol for metadata
      * @param replyToEventId Optional event ID this transfer is responding to (e.g., payment request)
      * @return CompletableFuture with event ID
      */
     public CompletableFuture<String> sendTokenTransfer(String recipientPubkeyHex, String tokenJson,
-                                                        Long amount, String symbol, String replyToEventId) {
+                                                        BigInteger amount, String symbol, String replyToEventId) {
         try {
             Event event = TokenTransferProtocol.createTokenTransferEvent(
                 keyManager, recipientPubkeyHex, tokenJson, amount, symbol, replyToEventId);
@@ -374,8 +376,14 @@ public class NostrClient {
      */
     public CompletableFuture<Boolean> publishNametagBinding(String nametagId, String unicityAddress) {
         try {
+            String hashedNametag = NametagUtils.hashNametag(nametagId);
+            logger.info("Publishing nametag binding: '{}' (hashed: {}...) -> pubkey {}...",
+                nametagId, hashedNametag.substring(0, 16), keyManager.getPublicKeyHex().substring(0, 16));
             Event event = NametagBinding.createBindingEvent(keyManager, nametagId, unicityAddress);
-            return publishEvent(event).thenApply(eventId -> true);
+            return publishEvent(event).thenApply(eventId -> {
+                logger.info("Nametag binding published successfully: eventId={}...", eventId.substring(0, 16));
+                return true;
+            });
         } catch (Exception e) {
             CompletableFuture<Boolean> future = new CompletableFuture<>();
             future.completeExceptionally(e);
@@ -392,6 +400,10 @@ public class NostrClient {
     public CompletableFuture<String> queryPubkeyByNametag(String nametagId) {
         CompletableFuture<String> future = new CompletableFuture<>();
 
+        // Log the query for debugging
+        String hashedNametag = NametagUtils.hashNametag(nametagId);
+        logger.info("Querying nametag '{}' (hashed: {}...)", nametagId, hashedNametag.substring(0, 16));
+
         Filter filter = NametagBinding.createNametagToPubkeyFilter(nametagId);
         String subscriptionId = "query-" + UUID.randomUUID().toString().substring(0, 8);
 
@@ -399,7 +411,11 @@ public class NostrClient {
         NostrEventListener listener = new NostrEventListener() {
             @Override
             public void onEvent(Event event) {
+                logger.debug("Nametag query got event: kind={}, pubkey={}...",
+                    event.getKind(), event.getPubkey().substring(0, 16));
                 if (event.getKind() == EventKinds.APP_DATA) {
+                    logger.info("Found nametag binding for '{}', pubkey: {}...",
+                        nametagId, event.getPubkey().substring(0, 16));
                     future.complete(event.getPubkey());
                     unsubscribe(subscriptionId);
                 }
@@ -408,6 +424,7 @@ public class NostrClient {
             @Override
             public void onEndOfStoredEvents(String subId) {
                 if (!future.isDone()) {
+                    logger.warn("Nametag '{}' not found (EOSE received with no results)", nametagId);
                     future.complete(null);
                     unsubscribe(subscriptionId);
                 }

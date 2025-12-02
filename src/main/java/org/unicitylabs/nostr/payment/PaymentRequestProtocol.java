@@ -8,6 +8,7 @@ import org.unicitylabs.nostr.crypto.NostrKeyManager;
 import org.unicitylabs.nostr.protocol.Event;
 import org.unicitylabs.nostr.protocol.EventKinds;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
@@ -35,9 +36,9 @@ public class PaymentRequestProtocol {
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PaymentRequest {
-        /** Amount in smallest units (e.g., lamports for SOL) */
+        /** Amount in smallest units (e.g., lamports for SOL) - uses BigInteger to handle large values */
         @JsonProperty("amount")
-        private long amount;
+        private BigInteger amount;
 
         /** Coin/token type ID - precisely identifies the token type */
         @JsonProperty("coinId")
@@ -57,7 +58,7 @@ public class PaymentRequestProtocol {
 
         public PaymentRequest() {}
 
-        public PaymentRequest(long amount, String coinId, String message, String recipientNametag) {
+        public PaymentRequest(BigInteger amount, String coinId, String message, String recipientNametag) {
             this.amount = amount;
             this.coinId = coinId;
             this.message = message;
@@ -65,9 +66,21 @@ public class PaymentRequestProtocol {
             this.requestId = UUID.randomUUID().toString().substring(0, 8);
         }
 
+        /**
+         * Convenience constructor accepting long amount (for small values).
+         */
+        public PaymentRequest(long amount, String coinId, String message, String recipientNametag) {
+            this(BigInteger.valueOf(amount), coinId, message, recipientNametag);
+        }
+
         // Getters and setters
-        public long getAmount() { return amount; }
-        public void setAmount(long amount) { this.amount = amount; }
+        public BigInteger getAmount() { return amount; }
+        public void setAmount(BigInteger amount) { this.amount = amount; }
+
+        /**
+         * Convenience setter for long values.
+         */
+        public void setAmount(long amount) { this.amount = BigInteger.valueOf(amount); }
 
         public String getCoinId() { return coinId; }
         public void setCoinId(String coinId) { this.coinId = coinId; }
@@ -119,7 +132,7 @@ public class PaymentRequestProtocol {
         List<List<String>> tags = new ArrayList<>();
         tags.add(Arrays.asList("p", targetPubkeyHex));  // Target pubkey (who should pay)
         tags.add(Arrays.asList("type", "payment_request"));
-        tags.add(Arrays.asList("amount", String.valueOf(request.getAmount())));
+        tags.add(Arrays.asList("amount", request.getAmount().toString()));
         if (request.getRecipientNametag() != null) {
             tags.add(Arrays.asList("recipient", request.getRecipientNametag()));
         }
@@ -179,11 +192,11 @@ public class PaymentRequestProtocol {
      * @param event Payment request event
      * @return Amount or null if not present
      */
-    public static Long getAmount(Event event) {
+    public static BigInteger getAmount(Event event) {
         String amountStr = event.getTagValue("amount");
         if (amountStr != null) {
             try {
-                return Long.parseLong(amountStr);
+                return new BigInteger(amountStr);
             } catch (NumberFormatException e) {
                 return null;
             }
