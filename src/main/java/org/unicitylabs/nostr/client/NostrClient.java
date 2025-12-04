@@ -31,6 +31,7 @@ public class NostrClient {
     private static final Logger logger = LoggerFactory.getLogger(NostrClient.class);
     private static final int CONNECTION_TIMEOUT_SECONDS = 30;
     private static final int RECONNECT_DELAY_MS = 5000;
+    private static final int DEFAULT_QUERY_TIMEOUT_MS = 5000;
 
     private final NostrKeyManager keyManager;
     private final OkHttpClient httpClient;
@@ -42,6 +43,7 @@ public class NostrClient {
 
     private boolean isRunning = false;
     private ScheduledExecutorService reconnectExecutor;
+    private int queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS;
 
     /**
      * Create a Nostr client with key manager.
@@ -58,6 +60,24 @@ public class NostrClient {
             .build();
         this.jsonMapper = new ObjectMapper();
         this.reconnectExecutor = Executors.newScheduledThreadPool(1);
+    }
+
+    /**
+     * Get the current query timeout in milliseconds.
+     *
+     * @return Query timeout in milliseconds
+     */
+    public int getQueryTimeoutMs() {
+        return queryTimeoutMs;
+    }
+
+    /**
+     * Set the query timeout for nametag lookups and other queries.
+     *
+     * @param timeoutMs Timeout in milliseconds
+     */
+    public void setQueryTimeoutMs(int timeoutMs) {
+        this.queryTimeoutMs = timeoutMs;
     }
 
     /**
@@ -433,9 +453,10 @@ public class NostrClient {
 
         subscribe(subscriptionId, filter, listener);
 
-        // Timeout after 5 seconds
-        CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS).execute(() -> {
+        // Timeout using configurable queryTimeoutMs
+        CompletableFuture.delayedExecutor(queryTimeoutMs, TimeUnit.MILLISECONDS).execute(() -> {
             if (!future.isDone()) {
+                logger.warn("Nametag '{}' query timed out after {}ms", nametagId, queryTimeoutMs);
                 future.complete(null);
                 unsubscribe(subscriptionId);
             }
