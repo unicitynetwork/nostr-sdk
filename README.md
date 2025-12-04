@@ -92,6 +92,57 @@ NostrClient client = new NostrClient(keyManager);
 client.connect("wss://relay.example.com").get();
 ```
 
+### Connection Management
+
+The client supports automatic reconnection with exponential backoff and connection monitoring:
+
+```java
+NostrClient client = new NostrClient(keyManager);
+
+// Configure reconnection behavior (all optional, shown with defaults)
+client.setAutoReconnect(true);           // Enable auto-reconnect on connection loss
+client.setReconnectIntervalMs(1000);     // Initial reconnect delay (1 second)
+client.setMaxReconnectIntervalMs(30000); // Max backoff delay (30 seconds)
+client.setPingIntervalMs(30000);         // Health check interval (0 to disable)
+client.setQueryTimeoutMs(5000);          // Query timeout for nametag lookups
+
+// Monitor connection events
+client.addConnectionListener(new NostrClient.ConnectionEventListener() {
+    @Override
+    public void onConnect(String relayUrl) {
+        System.out.println("Connected to " + relayUrl);
+    }
+
+    @Override
+    public void onDisconnect(String relayUrl, String reason) {
+        System.out.println("Disconnected from " + relayUrl + ": " + reason);
+    }
+
+    @Override
+    public void onReconnecting(String relayUrl, int attempt) {
+        System.out.println("Reconnecting to " + relayUrl + " (attempt " + attempt + ")...");
+    }
+
+    @Override
+    public void onReconnected(String relayUrl) {
+        System.out.println("Reconnected to " + relayUrl);
+    }
+});
+
+// Connect to relays
+client.connect("wss://relay.example.com").get();
+
+// Check connection status
+System.out.println("Connected: " + client.isConnected());
+System.out.println("Connected relays: " + client.getConnectedRelays());
+```
+
+**Reconnection Features:**
+- **Exponential backoff**: Delay doubles after each failed attempt (1s → 2s → 4s → ... → max)
+- **Health checks**: OkHttp's built-in ping detects stale connections
+- **Auto-resubscribe**: Subscriptions are automatically re-established after reconnect
+- **Event queuing**: Events published while disconnected are queued and sent on reconnect
+
 ### Send Encrypted Message (NIP-04 Legacy)
 
 ```java

@@ -30,8 +30,10 @@ public class NostrClient {
 
     private static final Logger logger = LoggerFactory.getLogger(NostrClient.class);
     private static final int CONNECTION_TIMEOUT_SECONDS = 30;
-    private static final int RECONNECT_DELAY_MS = 5000;
     private static final int DEFAULT_QUERY_TIMEOUT_MS = 5000;
+    private static final int DEFAULT_RECONNECT_INTERVAL_MS = 1000;
+    private static final int DEFAULT_MAX_RECONNECT_INTERVAL_MS = 30000;
+    private static final int DEFAULT_PING_INTERVAL_MS = 30000;
 
     private final NostrKeyManager keyManager;
     private final OkHttpClient httpClient;
@@ -40,10 +42,31 @@ public class NostrClient {
     private final Map<String, RelayConnection> relayConnections = new ConcurrentHashMap<>();
     private final Map<String, SubscriptionInfo> subscriptions = new ConcurrentHashMap<>();
     private final List<QueuedEvent> messageQueue = new CopyOnWriteArrayList<>();
+    private final List<ConnectionEventListener> connectionListeners = new CopyOnWriteArrayList<>();
 
     private boolean isRunning = false;
     private ScheduledExecutorService reconnectExecutor;
+
+    // Configuration options
     private int queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS;
+    private boolean autoReconnect = true;
+    private int reconnectIntervalMs = DEFAULT_RECONNECT_INTERVAL_MS;
+    private int maxReconnectIntervalMs = DEFAULT_MAX_RECONNECT_INTERVAL_MS;
+    private int pingIntervalMs = DEFAULT_PING_INTERVAL_MS;
+
+    /**
+     * Connection event listener for monitoring relay connections.
+     */
+    public interface ConnectionEventListener {
+        /** Called when a relay connection is established. */
+        default void onConnect(String relayUrl) {}
+        /** Called when a relay connection is lost. */
+        default void onDisconnect(String relayUrl, String reason) {}
+        /** Called when reconnection is being attempted. */
+        default void onReconnecting(String relayUrl, int attempt) {}
+        /** Called when reconnection succeeds. */
+        default void onReconnected(String relayUrl) {}
+    }
 
     /**
      * Create a Nostr client with key manager.
@@ -56,10 +79,90 @@ public class NostrClient {
             .connectTimeout(CONNECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.SECONDS)  // No read timeout for WebSocket
             .writeTimeout(CONNECTION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .pingInterval(25, TimeUnit.SECONDS)  // Keep connection alive
+            .pingInterval(pingIntervalMs > 0 ? pingIntervalMs : 25000, TimeUnit.MILLISECONDS)  // OkHttp built-in ping
             .build();
         this.jsonMapper = new ObjectMapper();
         this.reconnectExecutor = Executors.newScheduledThreadPool(1);
+    }
+
+    /**
+     * Add a connection event listener.
+     *
+     * @param listener Listener for connection events
+     */
+    public void addConnectionListener(ConnectionEventListener listener) {
+        connectionListeners.add(listener);
+    }
+
+    /**
+     * Remove a connection event listener.
+     *
+     * @param listener Listener to remove
+     */
+    public void removeConnectionListener(ConnectionEventListener listener) {
+        connectionListeners.remove(listener);
+    }
+
+    /**
+     * Set whether automatic reconnection is enabled.
+     *
+     * @param autoReconnect true to enable auto-reconnect (default: true)
+     */
+    public void setAutoReconnect(boolean autoReconnect) {
+        this.autoReconnect = autoReconnect;
+    }
+
+    /**
+     * Set the initial reconnect interval.
+     *
+     * @param intervalMs Initial reconnect interval in milliseconds
+     */
+    public void setReconnectIntervalMs(int intervalMs) {
+        this.reconnectIntervalMs = intervalMs;
+    }
+
+    /**
+     * Set the maximum reconnect interval (for exponential backoff).
+     *
+     * @param maxIntervalMs Maximum reconnect interval in milliseconds
+     */
+    public void setMaxReconnectIntervalMs(int maxIntervalMs) {
+        this.maxReconnectIntervalMs = maxIntervalMs;
+    }
+
+    /**
+     * Set the ping interval for health checks.
+     *
+     * @param intervalMs Ping interval in milliseconds (0 to disable)
+     */
+    public void setPingIntervalMs(int intervalMs) {
+        this.pingIntervalMs = intervalMs;
+    }
+
+    /**
+     * Emit a connection event to all listeners.
+     */
+    private void emitConnectionEvent(String eventType, String relayUrl, Object extra) {
+        for (ConnectionEventListener listener : connectionListeners) {
+            try {
+                switch (eventType) {
+                    case "connect":
+                        listener.onConnect(relayUrl);
+                        break;
+                    case "disconnect":
+                        listener.onDisconnect(relayUrl, (String) extra);
+                        break;
+                    case "reconnecting":
+                        listener.onReconnecting(relayUrl, (Integer) extra);
+                        break;
+                    case "reconnected":
+                        listener.onReconnected(relayUrl);
+                        break;
+                }
+            } catch (Exception e) {
+                logger.warn("Error in connection listener", e);
+            }
+        }
     }
 
     /**
@@ -581,13 +684,35 @@ public class NostrClient {
 
     private class RelayConnection extends WebSocketListener {
         private final String url;
-        private final CompletableFuture<Void> connectFuture;
+        private CompletableFuture<Void> connectFuture;
         private WebSocket webSocket;
         private boolean connected = false;
+        private boolean wasConnected = false;
+        private int reconnectAttempts = 0;
 
         RelayConnection(String url, CompletableFuture<Void> connectFuture) {
             this.url = url;
             this.connectFuture = connectFuture;
+        }
+
+        void setConnectFuture(CompletableFuture<Void> future) {
+            this.connectFuture = future;
+        }
+
+        void resetReconnectAttempts() {
+            this.reconnectAttempts = 0;
+        }
+
+        int incrementReconnectAttempts() {
+            return ++this.reconnectAttempts;
+        }
+
+        int getReconnectAttempts() {
+            return reconnectAttempts;
+        }
+
+        boolean wasConnectedBefore() {
+            return wasConnected;
         }
 
         void setWebSocket(WebSocket webSocket) {
@@ -614,8 +739,23 @@ public class NostrClient {
         @Override
         public void onOpen(WebSocket webSocket, Response response) {
             connected = true;
-            logger.info("Connected to relay: {}", url);
-            connectFuture.complete(null);
+            boolean wasReconnecting = wasConnected;
+            wasConnected = true;
+
+            if (wasReconnecting) {
+                logger.info("Reconnected to relay: {}", url);
+                emitConnectionEvent("reconnected", url, null);
+            } else {
+                logger.info("Connected to relay: {}", url);
+                emitConnectionEvent("connect", url, null);
+            }
+
+            // Reset reconnect attempts on successful connection
+            resetReconnectAttempts();
+
+            if (connectFuture != null && !connectFuture.isDone()) {
+                connectFuture.complete(null);
+            }
 
             // Flush queued messages
             for (QueuedEvent queued : messageQueue) {
@@ -656,6 +796,7 @@ public class NostrClient {
 
         @Override
         public void onFailure(WebSocket webSocket, Throwable t, Response response) {
+            boolean wasConnectedBefore = connected;
             connected = false;
 
             // Don't log EOFException as ERROR during intentional disconnect
@@ -663,36 +804,79 @@ public class NostrClient {
             boolean isEOF = t instanceof java.io.EOFException;
             boolean isIntentionalDisconnect = !isRunning;
 
+            String reason = t != null ? t.getMessage() : "Unknown error";
+
             if (isEOF && isIntentionalDisconnect) {
                 // Normal disconnect, just debug log
                 logger.debug("WebSocket closed during disconnect: {}", url);
             } else if (isEOF) {
                 // EOF during active connection (relay closed unexpectedly)
                 logger.warn("Relay closed connection unexpectedly: {}", url);
+                reason = "Connection closed unexpectedly";
             } else {
                 // Actual error (not EOF)
                 logger.error("Relay connection failed: {}", url, t);
             }
 
-            if (!connectFuture.isDone()) {
+            // Emit disconnect event if we were connected
+            if (wasConnectedBefore) {
+                emitConnectionEvent("disconnect", url, reason);
+            }
+
+            if (connectFuture != null && !connectFuture.isDone()) {
                 connectFuture.completeExceptionally(t);
             }
 
-            // Schedule reconnect if still running
-            if (isRunning) {
-                reconnectExecutor.schedule(() -> connectToRelay(url), RECONNECT_DELAY_MS, TimeUnit.MILLISECONDS);
+            // Schedule reconnect with exponential backoff if still running
+            scheduleReconnect();
+        }
+
+        private void scheduleReconnect() {
+            if (!isRunning || !autoReconnect) {
+                return;
             }
+
+            int attempt = incrementReconnectAttempts();
+
+            // Calculate delay with exponential backoff: baseDelay * 2^(attempts-1)
+            long delay = (long) (reconnectIntervalMs * Math.pow(2, attempt - 1));
+            delay = Math.min(delay, maxReconnectIntervalMs);
+
+            logger.info("Scheduling reconnect to {} in {}ms (attempt {})", url, delay, attempt);
+            emitConnectionEvent("reconnecting", url, attempt);
+
+            reconnectExecutor.schedule(() -> {
+                if (isRunning && autoReconnect) {
+                    reconnectToRelay();
+                }
+            }, delay, TimeUnit.MILLISECONDS);
+        }
+
+        private void reconnectToRelay() {
+            logger.info("Attempting to reconnect to relay: {}", url);
+
+            Request request = new Request.Builder()
+                .url(url)
+                .build();
+
+            // Create a new future for this reconnect attempt
+            CompletableFuture<Void> reconnectFuture = new CompletableFuture<>();
+            setConnectFuture(reconnectFuture);
+
+            WebSocket newWebSocket = httpClient.newWebSocket(request, this);
+            setWebSocket(newWebSocket);
         }
 
         @Override
         public void onClosed(WebSocket webSocket, int code, String reason) {
             connected = false;
-            logger.info("Relay closed: {} - {}", url, reason);
+            logger.info("Relay closed: {} - {} (code: {})", url, reason, code);
 
-            // Schedule reconnect if still running
-            if (isRunning) {
-                reconnectExecutor.schedule(() -> connectToRelay(url), RECONNECT_DELAY_MS, TimeUnit.MILLISECONDS);
-            }
+            // Emit disconnect event
+            emitConnectionEvent("disconnect", url, reason != null ? reason : "Connection closed");
+
+            // Schedule reconnect with exponential backoff if still running
+            scheduleReconnect();
         }
     }
 
