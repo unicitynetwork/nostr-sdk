@@ -491,6 +491,48 @@ public class NostrClient {
     }
 
     /**
+     * Send a payment request response (decline/expiration notification).
+     *
+     * @param targetPubkeyHex Target's Nostr public key (original request sender)
+     * @param response Payment request response
+     * @return CompletableFuture with event ID
+     */
+    public CompletableFuture<String> sendPaymentRequestResponse(String targetPubkeyHex,
+                                                                  PaymentRequestProtocol.PaymentRequestResponse response) {
+        try {
+            Event event = PaymentRequestProtocol.createPaymentRequestResponseEvent(keyManager, targetPubkeyHex, response);
+            return publishEvent(event);
+        } catch (Exception e) {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            future.completeExceptionally(e);
+            return future;
+        }
+    }
+
+    /**
+     * Send a payment request decline response.
+     * Convenience method for declining a payment request.
+     *
+     * @param originalRequestSenderPubkey Pubkey of who sent the original payment request
+     * @param originalEventId Event ID of the original payment request
+     * @param requestId Request ID from the original payment request
+     * @param reason Optional reason for declining
+     * @return CompletableFuture with event ID
+     */
+    public CompletableFuture<String> sendPaymentRequestDecline(String originalRequestSenderPubkey,
+                                                                 String originalEventId,
+                                                                 String requestId,
+                                                                 String reason) {
+        PaymentRequestProtocol.PaymentRequestResponse response = new PaymentRequestProtocol.PaymentRequestResponse(
+            requestId,
+            originalEventId,
+            PaymentRequestProtocol.ResponseStatus.DECLINED,
+            reason
+        );
+        return sendPaymentRequestResponse(originalRequestSenderPubkey, response);
+    }
+
+    /**
      * Publish a nametag binding.
      *
      * @param nametagId Nametag identifier

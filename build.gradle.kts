@@ -75,6 +75,21 @@ tasks.test {
 tasks.register<Test>("e2eTest") {
     useJUnit()
     include("**/*E2ETest*")
+
+    // Forward system properties from command line to test JVM
+    // This allows: ./gradlew e2eTest -DtargetNametag=mp-9 -DdeadlineSeconds=5
+    systemProperties(System.getProperties().mapKeys { it.key.toString() }.filterKeys {
+        it.startsWith("target") ||
+        it.startsWith("amount") ||
+        it.startsWith("deadline") ||
+        it.startsWith("coinId") ||
+        it.startsWith("message") ||
+        it.startsWith("recipient") ||
+        it.startsWith("nostrRelay") ||
+        it.startsWith("timeout") ||
+        it.startsWith("wait") ||
+        it.startsWith("decimals")
+    })
 }
 
 // Publishing configuration for JitPack

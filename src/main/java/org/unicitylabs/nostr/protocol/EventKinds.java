@@ -64,6 +64,9 @@ public final class EventKinds {
     /** Unicity: Payment request (request for token transfer) */
     public static final int PAYMENT_REQUEST = 31115;
 
+    /** Unicity: Payment request response (accept/decline) */
+    public static final int PAYMENT_REQUEST_RESPONSE = 31116;
+
     // Ranges
 
     /**
@@ -122,6 +125,7 @@ public final class EventKinds {
             case TOKEN_TRANSFER: return "Token Transfer";
             case FILE_METADATA: return "File Metadata";
             case PAYMENT_REQUEST: return "Payment Request";
+            case PAYMENT_REQUEST_RESPONSE: return "Payment Request Response";
             default: return "Unknown (" + kind + ")";
         }
     }
