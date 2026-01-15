@@ -812,18 +812,26 @@ public class NostrClient {
             messageQueue.clear();
 
             // Re-establish subscriptions
-            for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
-                try {
-                    List<Object> reqMessage = new ArrayList<>();
-                    reqMessage.add("REQ");
-                    reqMessage.add(entry.getKey());
-                    reqMessage.add(entry.getValue().filter);
+            sendAllSubscriptions(webSocket);
+        }
 
-                    String json = jsonMapper.writeValueAsString(reqMessage);
-                    webSocket.send(json);
-                } catch (Exception e) {
-                    logger.error("Failed to re-establish subscription", e);
-                }
+        private void sendSubscription(WebSocket webSocket, String subscriptionId, Filter filter) {
+            try {
+                List<Object> reqMessage = new ArrayList<>();
+                reqMessage.add("REQ");
+                reqMessage.add(subscriptionId);
+                reqMessage.add(filter);
+
+                String json = jsonMapper.writeValueAsString(reqMessage);
+                webSocket.send(json);
+            } catch (Exception e) {
+                logger.error("Failed to send subscription {}", subscriptionId, e);
+            }
+        }
+
+        private void sendAllSubscriptions(WebSocket webSocket) {
+            for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
+                sendSubscription(webSocket, entry.getKey(), entry.getValue().filter);
             }
         }
 
@@ -883,31 +891,16 @@ public class NostrClient {
                 logger.info("Sent NIP-42 auth response to {}", url);
 
                 // Re-subscribe after auth (relay may have ignored pre-auth subscriptions)
-                resubscribeToRelay(webSocket);
+                resubscribeAfterAuth(webSocket);
 
             } catch (Exception e) {
                 logger.error("Error handling AUTH challenge", e);
             }
         }
 
-        /**
-         * Re-send all subscriptions to a specific relay after authentication.
-         */
-        private void resubscribeToRelay(WebSocket webSocket) {
-            for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
-                try {
-                    List<Object> reqMessage = new ArrayList<>();
-                    reqMessage.add("REQ");
-                    reqMessage.add(entry.getKey());
-                    reqMessage.add(entry.getValue().filter);
-
-                    String json = jsonMapper.writeValueAsString(reqMessage);
-                    webSocket.send(json);
-                    logger.debug("Re-subscribed {} after auth", entry.getKey());
-                } catch (Exception e) {
-                    logger.error("Failed to re-subscribe after auth", e);
-                }
-            }
+        private void resubscribeAfterAuth(WebSocket webSocket) {
+            logger.debug("Re-subscribing after auth");
+            sendAllSubscriptions(webSocket);
         }
 
         @Override
