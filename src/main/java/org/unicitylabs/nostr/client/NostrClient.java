@@ -830,9 +830,83 @@ public class NostrClient {
         @Override
         public void onMessage(WebSocket webSocket, String text) {
             try {
+                // Check for AUTH message first (NIP-42)
+                if (text.startsWith("[\"AUTH\"")) {
+                    handleAuthChallenge(text);
+                    return;
+                }
                 handleRelayMessage(text);
             } catch (Exception e) {
                 logger.error("Error handling relay message", e);
+            }
+        }
+
+        /**
+         * Handle NIP-42 authentication challenge from relay.
+         */
+        private void handleAuthChallenge(String message) {
+            try {
+                @SuppressWarnings("unchecked")
+                List<Object> json = jsonMapper.readValue(message, List.class);
+                if (json.size() < 2) {
+                    logger.warn("Invalid AUTH message: missing challenge");
+                    return;
+                }
+
+                String challenge = (String) json.get(1);
+                logger.info("Received NIP-42 auth challenge from {}", url);
+
+                // Create auth event (kind 22242)
+                long createdAt = System.currentTimeMillis() / 1000;
+                Event authEvent = new Event();
+                authEvent.setPubkey(keyManager.getPublicKeyHex());
+                authEvent.setCreatedAt(createdAt);
+                authEvent.setKind(EventKinds.AUTH);
+                authEvent.setTags(Arrays.asList(
+                    Arrays.asList("relay", url),
+                    Arrays.asList("challenge", challenge)
+                ));
+                authEvent.setContent("");
+
+                // Calculate ID and sign
+                String eventId = calculateEventId(authEvent);
+                authEvent.setId(eventId);
+
+                byte[] eventIdBytes = Hex.decodeHex(eventId.toCharArray());
+                String signature = keyManager.signHex(eventIdBytes);
+                authEvent.setSig(signature);
+
+                // Send AUTH response
+                List<Object> authMessage = Arrays.asList("AUTH", authEvent);
+                String authJson = jsonMapper.writeValueAsString(authMessage);
+                webSocket.send(authJson);
+                logger.info("Sent NIP-42 auth response to {}", url);
+
+                // Re-subscribe after auth (relay may have ignored pre-auth subscriptions)
+                resubscribeToRelay(webSocket);
+
+            } catch (Exception e) {
+                logger.error("Error handling AUTH challenge", e);
+            }
+        }
+
+        /**
+         * Re-send all subscriptions to a specific relay after authentication.
+         */
+        private void resubscribeToRelay(WebSocket webSocket) {
+            for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
+                try {
+                    List<Object> reqMessage = new ArrayList<>();
+                    reqMessage.add("REQ");
+                    reqMessage.add(entry.getKey());
+                    reqMessage.add(entry.getValue().filter);
+
+                    String json = jsonMapper.writeValueAsString(reqMessage);
+                    webSocket.send(json);
+                    logger.debug("Re-subscribed {} after auth", entry.getKey());
+                } catch (Exception e) {
+                    logger.error("Failed to re-subscribe after auth", e);
+                }
             }
         }
 
@@ -941,6 +1015,9 @@ public class NostrClient {
                     break;
                 case "NOTICE":
                     handleNoticeMessage(json);
+                    break;
+                case "AUTH":
+                    // AUTH is handled in RelayConnection.onMessage
                     break;
                 default:
                     logger.debug("Unknown message type: {}", messageType);
