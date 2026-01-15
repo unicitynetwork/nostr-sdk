@@ -44,6 +44,9 @@ public final class EventKinds {
     /** NIP-65: Relay list metadata */
     public static final int RELAY_LIST = 10002;
 
+    /** NIP-42: Client authentication to relay */
+    public static final int AUTH = 22242;
+
     /** NIP-78: Application-specific data (parameterized replaceable) */
     public static final int APP_DATA = 30078;
 
@@ -119,6 +122,7 @@ public final class EventKinds {
             case REACTION: return "Reaction";
             case GIFT_WRAP: return "Gift Wrap";
             case RELAY_LIST: return "Relay List";
+            case AUTH: return "Auth";
             case APP_DATA: return "App Data";
             case AGENT_PROFILE: return "Agent Profile";
             case AGENT_LOCATION: return "Agent Location";

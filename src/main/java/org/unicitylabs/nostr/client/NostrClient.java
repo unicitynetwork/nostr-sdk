@@ -812,28 +812,95 @@ public class NostrClient {
             messageQueue.clear();
 
             // Re-establish subscriptions
-            for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
-                try {
-                    List<Object> reqMessage = new ArrayList<>();
-                    reqMessage.add("REQ");
-                    reqMessage.add(entry.getKey());
-                    reqMessage.add(entry.getValue().filter);
+            sendAllSubscriptions(webSocket);
+        }
 
-                    String json = jsonMapper.writeValueAsString(reqMessage);
-                    webSocket.send(json);
-                } catch (Exception e) {
-                    logger.error("Failed to re-establish subscription", e);
-                }
+        private void sendSubscription(WebSocket webSocket, String subscriptionId, Filter filter) {
+            try {
+                List<Object> reqMessage = new ArrayList<>();
+                reqMessage.add("REQ");
+                reqMessage.add(subscriptionId);
+                reqMessage.add(filter);
+
+                String json = jsonMapper.writeValueAsString(reqMessage);
+                webSocket.send(json);
+            } catch (Exception e) {
+                logger.error("Failed to send subscription {}", subscriptionId, e);
+            }
+        }
+
+        private void sendAllSubscriptions(WebSocket webSocket) {
+            for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
+                sendSubscription(webSocket, entry.getKey(), entry.getValue().filter);
             }
         }
 
         @Override
         public void onMessage(WebSocket webSocket, String text) {
             try {
+                // Check for AUTH message first (NIP-42)
+                if (text.startsWith("[\"AUTH\"")) {
+                    handleAuthChallenge(webSocket, text);
+                    return;
+                }
                 handleRelayMessage(text);
             } catch (Exception e) {
                 logger.error("Error handling relay message", e);
             }
+        }
+
+        /**
+         * Handle NIP-42 authentication challenge from relay.
+         */
+        private void handleAuthChallenge(WebSocket webSocket, String message) {
+            try {
+                @SuppressWarnings("unchecked")
+                List<Object> json = jsonMapper.readValue(message, List.class);
+                if (json.size() < 2) {
+                    logger.warn("Invalid AUTH message: missing challenge");
+                    return;
+                }
+
+                String challenge = (String) json.get(1);
+                logger.info("Received NIP-42 auth challenge from {}", url);
+
+                // Create auth event (kind 22242)
+                long createdAt = System.currentTimeMillis() / 1000;
+                Event authEvent = new Event();
+                authEvent.setPubkey(keyManager.getPublicKeyHex());
+                authEvent.setCreatedAt(createdAt);
+                authEvent.setKind(EventKinds.AUTH);
+                authEvent.setTags(Arrays.asList(
+                    Arrays.asList("relay", url),
+                    Arrays.asList("challenge", challenge)
+                ));
+                authEvent.setContent("");
+
+                // Calculate ID and sign
+                String eventId = calculateEventId(authEvent);
+                authEvent.setId(eventId);
+
+                byte[] eventIdBytes = Hex.decodeHex(eventId.toCharArray());
+                String signature = keyManager.signHex(eventIdBytes);
+                authEvent.setSig(signature);
+
+                // Send AUTH response
+                List<Object> authMessage = Arrays.asList("AUTH", authEvent);
+                String authJson = jsonMapper.writeValueAsString(authMessage);
+                webSocket.send(authJson);
+                logger.info("Sent NIP-42 auth response to {}", url);
+
+                // Re-subscribe after auth (relay may have ignored pre-auth subscriptions)
+                resubscribeAfterAuth(webSocket);
+
+            } catch (Exception e) {
+                logger.error("Error handling AUTH challenge", e);
+            }
+        }
+
+        private void resubscribeAfterAuth(WebSocket webSocket) {
+            logger.debug("Re-subscribing after auth");
+            sendAllSubscriptions(webSocket);
         }
 
         @Override

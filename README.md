@@ -5,6 +5,7 @@ Java SDK for Nostr protocol integration with Unicity blockchain applications.
 ## Features
 
 - **NIP-17 Private Messages**: Gift-wrapped private direct messages with sender anonymity
+- **NIP-42 Client Authentication**: Automatic relay authentication for protected relays
 - **NIP-44 Encryption**: Modern ChaCha20-Poly1305 AEAD encryption with HKDF key derivation
 - **Token Transfers**: Send and receive Unicity tokens via Nostr encrypted messages
 - **Payment Requests**: Request payments from other users via encrypted Nostr messages
@@ -376,6 +377,7 @@ The SDK is organized into several packages:
 | 14 | CHAT_MESSAGE | Private direct message rumor (NIP-17) |
 | 15 | READ_RECEIPT | Read receipt rumor (NIP-17) |
 | 1059 | GIFT_WRAP | Gift-wrapped message (NIP-17) |
+| 22242 | AUTH | Client authentication to relay (NIP-42) |
 | 30078 | APP_DATA | Nametag binding (parameterized replaceable) |
 | 31111 | AGENT_PROFILE | Agent profile information |
 | 31112 | AGENT_LOCATION | Agent GPS location broadcast |

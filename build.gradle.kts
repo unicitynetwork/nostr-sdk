@@ -53,6 +53,7 @@ dependencies {
     testImplementation("org.awaitility:awaitility:4.2.0")
     testImplementation("org.mockito:mockito-core:5.10.0")
     testImplementation("ch.qos.logback:logback-classic:1.4.11")
+    testImplementation("org.testcontainers:testcontainers:1.20.4")
 }
 
 tasks.withType<JavaCompile> {
@@ -67,11 +68,16 @@ animalsniffer {
 
 tasks.test {
     useJUnit()
-    // Exclude E2E tests from normal build - they require manual interaction
     exclude("**/*E2ETest*")
+    exclude("**/*IntegrationTest*")
 }
 
-// Separate task to run E2E tests explicitly
+tasks.register<Test>("integrationTest") {
+    useJUnit()
+    include("**/*IntegrationTest*")
+    systemProperty("api.version", "1.44")
+}
+
 tasks.register<Test>("e2eTest") {
     useJUnit()
     include("**/*E2ETest*")
