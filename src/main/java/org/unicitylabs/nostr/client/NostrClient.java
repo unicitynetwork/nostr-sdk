@@ -840,7 +840,7 @@ public class NostrClient {
             try {
                 // Check for AUTH message first (NIP-42)
                 if (text.startsWith("[\"AUTH\"")) {
-                    handleAuthChallenge(text);
+                    handleAuthChallenge(webSocket, text);
                     return;
                 }
                 handleRelayMessage(text);
@@ -852,7 +852,7 @@ public class NostrClient {
         /**
          * Handle NIP-42 authentication challenge from relay.
          */
-        private void handleAuthChallenge(String message) {
+        private void handleAuthChallenge(WebSocket webSocket, String message) {
             try {
                 @SuppressWarnings("unchecked")
                 List<Object> json = jsonMapper.readValue(message, List.class);
@@ -1008,9 +1008,6 @@ public class NostrClient {
                     break;
                 case "NOTICE":
                     handleNoticeMessage(json);
-                    break;
-                case "AUTH":
-                    // AUTH is handled in RelayConnection.onMessage
                     break;
                 default:
                     logger.debug("Unknown message type: {}", messageType);
