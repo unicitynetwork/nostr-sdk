@@ -41,6 +41,10 @@ public class Filter {
     @JsonProperty("#d")
     private List<String> dTags;
 
+    /** Events with these h tags (NIP-29 group IDs) */
+    @JsonProperty("#h")
+    private List<String> hTags;
+
     /** Minimum creation timestamp (inclusive) */
     @JsonProperty("since")
     private Long since;
@@ -102,6 +106,12 @@ public class Filter {
     public List<String> getDTags() { return dTags; }
 
     /**
+     * Gets the "h" tags to filter (NIP-29 group IDs).
+     * @return list of "h" tags to filter
+     */
+    public List<String> getHTags() { return hTags; }
+
+    /**
      * Gets the timestamp for filtering events since.
      * @return timestamp for filtering events since
      */
@@ -161,6 +171,12 @@ public class Filter {
      * @param dTags list of "d" tags to filter
      */
     public void setDTags(List<String> dTags) { this.dTags = dTags; }
+
+    /**
+     * Sets the "h" tags to filter (NIP-29 group IDs).
+     * @param hTags list of "h" tags to filter
+     */
+    public void setHTags(List<String> hTags) { this.hTags = hTags; }
 
     /**
      * Sets the timestamp for filtering events since.
@@ -341,6 +357,26 @@ public class Filter {
          */
         public Builder dTags(List<String> dTags) {
             filter.dTags = new ArrayList<>(dTags);
+            return this;
+        }
+
+        /**
+         * Sets "h" tags to filter (NIP-29 group IDs).
+         * @param hTags "h" tags to filter
+         * @return this builder
+         */
+        public Builder hTags(String... hTags) {
+            filter.hTags = Arrays.asList(hTags);
+            return this;
+        }
+
+        /**
+         * Sets "h" tags to filter (NIP-29 group IDs).
+         * @param hTags "h" tags to filter
+         * @return this builder
+         */
+        public Builder hTags(List<String> hTags) {
+            filter.hTags = new ArrayList<>(hTags);
             return this;
         }
 
