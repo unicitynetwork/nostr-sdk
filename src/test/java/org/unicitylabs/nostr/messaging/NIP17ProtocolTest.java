@@ -328,6 +328,153 @@ public class NIP17ProtocolTest {
         assertEquals(message, privateMessage.getContent());
     }
 
+    // --- Additional Scenarios ---
+
+    @Test
+    public void testCreateGiftWrapWithSenderNametag() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+
+        Event giftWrap = NIP17Protocol.createGiftWrap(
+                alice, bob.getPublicKeyHex(), "Hello", null, "alice@unicity");
+
+        PrivateMessage msg = NIP17Protocol.unwrap(giftWrap, bob);
+        assertEquals("alice@unicity", msg.getSenderNametag());
+        assertEquals("Hello", msg.getContent());
+    }
+
+    @Test
+    public void testCreateGiftWrapWithBothReplyAndNametag() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+
+        Event giftWrap = NIP17Protocol.createGiftWrap(
+                alice, bob.getPublicKeyHex(), "Reply msg", "original_evt_id", "alice@unicity");
+
+        PrivateMessage msg = NIP17Protocol.unwrap(giftWrap, bob);
+        assertEquals("Reply msg", msg.getContent());
+        assertEquals("original_evt_id", msg.getReplyToEventId());
+        assertEquals("alice@unicity", msg.getSenderNametag());
+    }
+
+    @Test
+    public void testCreateGiftWrapWithNullReplyAndNullNametag() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+
+        Event giftWrap = NIP17Protocol.createGiftWrap(
+                alice, bob.getPublicKeyHex(), "Hello", null, null);
+
+        PrivateMessage msg = NIP17Protocol.unwrap(giftWrap, bob);
+        assertNull(msg.getReplyToEventId());
+        assertNull(msg.getSenderNametag());
+    }
+
+    @Test
+    public void testCreateGiftWrapEmptyReplyTreatedAsAbsent() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+
+        Event giftWrap = NIP17Protocol.createGiftWrap(
+                alice, bob.getPublicKeyHex(), "Hello", "", null);
+
+        PrivateMessage msg = NIP17Protocol.unwrap(giftWrap, bob);
+        assertNull(msg.getReplyToEventId());
+    }
+
+    @Test
+    public void testGiftWrapNewlineAndSpecialCharsInContent() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+        String message = "line1\nline2\ttab\"quotes\"\\backslash{json}";
+
+        Event giftWrap = NIP17Protocol.createGiftWrap(alice, bob.getPublicKeyHex(), message);
+        PrivateMessage msg = NIP17Protocol.unwrap(giftWrap, bob);
+        assertEquals(message, msg.getContent());
+    }
+
+    @Test
+    public void testPrivateMessageBuilderReadReceipt() {
+        PrivateMessage message = PrivateMessage.builder()
+                .eventId("evt1")
+                .senderPubkey("sender")
+                .recipientPubkey("recipient")
+                .content("")
+                .timestamp(1000L)
+                .kind(EventKinds.READ_RECEIPT)
+                .replyToEventId("original")
+                .build();
+
+        assertTrue(message.isReadReceipt());
+        assertFalse(message.isChatMessage());
+        assertEquals(EventKinds.READ_RECEIPT, message.getKind());
+    }
+
+    @Test
+    public void testPrivateMessageBuilderOtherKind() {
+        PrivateMessage message = PrivateMessage.builder()
+                .kind(1)
+                .build();
+
+        assertFalse(message.isChatMessage());
+        assertFalse(message.isReadReceipt());
+    }
+
+    @Test
+    public void testRumorDefaultConstructorDefaults() {
+        Rumor rumor = new Rumor();
+        assertNotNull(rumor.getTags());
+        assertTrue(rumor.getTags().isEmpty());
+        assertEquals("", rumor.getContent());
+    }
+
+    @Test
+    public void testRumorNullTagsDefaultToEmpty() {
+        Rumor rumor = new Rumor("pk", 0, 14, null, "msg");
+        assertNotNull(rumor.getTags());
+        assertTrue(rumor.getTags().isEmpty());
+    }
+
+    @Test
+    public void testRumorNullContentDefaultsToEmpty() {
+        Rumor rumor = new Rumor("pk", 0, 14, null, null);
+        assertEquals("", rumor.getContent());
+    }
+
+    @Test
+    public void testRumorIdIsDeterministic() {
+        Rumor r1 = new Rumor("pk", 1000, 14,
+                java.util.Arrays.asList(java.util.Arrays.asList("p", "recipient")),
+                "hello");
+        Rumor r2 = new Rumor("pk", 1000, 14,
+                java.util.Arrays.asList(java.util.Arrays.asList("p", "recipient")),
+                "hello");
+        assertEquals(r1.getId(), r2.getId());
+    }
+
+    @Test
+    public void testRumorIdIs64CharHex() {
+        Rumor rumor = new Rumor("pk", 1000, 14,
+                java.util.Collections.emptyList(), "msg");
+        assertNotNull(rumor.getId());
+        assertEquals(64, rumor.getId().length());
+        assertTrue(rumor.getId().matches("[0-9a-f]{64}"));
+    }
+
+    @Test
+    public void testRumorGetTagValueEmptyTags() {
+        Rumor rumor = new Rumor("pk", 0, 14, java.util.Collections.emptyList(), "");
+        assertNull(rumor.getTagValue("p"));
+    }
+
+    @Test
+    public void testRumorGetTagValueSingleElementTag() {
+        Rumor rumor = new Rumor("pk", 0, 14,
+                java.util.Arrays.asList(java.util.Collections.singletonList("p")),
+                "");
+        assertNull(rumor.getTagValue("p"));
+    }
+
     @Test
     public void testEventIdUniqueness() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
