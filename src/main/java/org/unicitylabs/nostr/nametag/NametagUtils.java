@@ -32,6 +32,12 @@ public class NametagUtils {
     private static final String NAMETAG_SALT = "unicity:nametag:";
     private static final PhoneNumberUtil phoneUtil = PhoneNumberUtil.getInstance();
 
+    /** Minimum nametag length (after normalization). */
+    public static final int NAMETAG_MIN_LENGTH = 3;
+
+    /** Maximum nametag length (after normalization). */
+    public static final int NAMETAG_MAX_LENGTH = 20;
+
     /**
      * Hash a nametag for privacy-preserving storage on Nostr.
      * Works for both regular nametags and phone numbers.
@@ -78,14 +84,7 @@ public class NametagUtils {
             if (normalized != null) {
                 return normalized;
             }
-            // If normalization failed, just clean digits
-            StringBuilder cleaned = new StringBuilder();
-            for (char c : trimmed.toCharArray()) {
-                if (Character.isDigit(c) || c == '+') {
-                    cleaned.append(c);
-                }
-            }
-            return cleaned.toString();
+            // If phone normalization fails, fall through to standard normalization
         }
 
         // For regular nametags: lowercase, remove @unicity suffix
@@ -208,7 +207,70 @@ public class NametagUtils {
             }
         }
 
-        // Regular nametag - return as-is
-        return nametag;
+        // Regular nametag - return normalized
+        return normalizeNametag(nametag, defaultCountry);
+    }
+
+    /**
+     * Check if a string is a valid phone number.
+     *
+     * @param str            String to check
+     * @param defaultCountry Default country code (e.g., "US")
+     * @return true if the string is a valid phone number
+     */
+    public static boolean isPhoneNumber(String str, String defaultCountry) {
+        try {
+            Phonenumber.PhoneNumber parsed;
+            if (str.startsWith("+")) {
+                parsed = phoneUtil.parse(str, null);
+            } else {
+                parsed = phoneUtil.parse(str, defaultCountry);
+            }
+            return phoneUtil.isValidNumber(parsed);
+        } catch (NumberParseException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Check if a string is a valid phone number (default country "US").
+     *
+     * @param str String to check
+     * @return true if the string is a valid phone number
+     */
+    public static boolean isPhoneNumber(String str) {
+        return isPhoneNumber(str, "US");
+    }
+
+    /**
+     * Validate a nametag string. Strips leading @, normalizes, then checks format.
+     * Regular nametags: lowercase alphanumeric, underscore, hyphen, 3-20 chars.
+     * Phone numbers: validated via libphonenumber.
+     *
+     * @param nametag        Nametag to validate
+     * @param defaultCountry Default country code for phone normalization
+     * @return true if the nametag is valid
+     */
+    public static boolean isValidNametag(String nametag, String defaultCountry) {
+        String stripped = nametag.startsWith("@") ? nametag.substring(1) : nametag;
+        String normalized = normalizeNametag(stripped, defaultCountry);
+
+        if (isPhoneNumber(normalized)) {
+            return true;
+        }
+
+        return normalized.matches(
+                "^[a-z0-9_-]{" + NAMETAG_MIN_LENGTH + "," + NAMETAG_MAX_LENGTH + "}$"
+        );
+    }
+
+    /**
+     * Validate a nametag string (default country "US").
+     *
+     * @param nametag Nametag to validate
+     * @return true if the nametag is valid
+     */
+    public static boolean isValidNametag(String nametag) {
+        return isValidNametag(nametag, "US");
     }
 }
