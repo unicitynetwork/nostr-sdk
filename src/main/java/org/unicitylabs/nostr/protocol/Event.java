@@ -1,7 +1,14 @@
 package org.unicitylabs.nostr.protocol;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.commons.codec.binary.Hex;
+import org.unicitylabs.nostr.crypto.NostrKeyManager;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -200,6 +207,39 @@ public class Event {
     public boolean hasTag(String tagName) {
         return tags.stream()
             .anyMatch(tag -> !tag.isEmpty() && tag.get(0).equals(tagName));
+    }
+
+    /**
+     * Verify the event's signature against its ID and pubkey.
+     *
+     * @return true if the signature is valid
+     */
+    public boolean verify() {
+        try {
+            if (id == null || sig == null || pubkey == null) {
+                return false;
+            }
+
+            // Recompute the event ID
+            ObjectMapper mapper = new ObjectMapper();
+            List<Object> eventData = Arrays.asList(
+                0, pubkey, createdAt, kind, tags, content
+            );
+            String eventJson = mapper.writeValueAsString(eventData);
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(eventJson.getBytes(StandardCharsets.UTF_8));
+            String computedId = new String(Hex.encodeHex(hashBytes));
+
+            if (!computedId.equals(id)) {
+                return false;
+            }
+
+            // Verify signature
+            byte[] eventIdBytes = Hex.decodeHex(id.toCharArray());
+            return NostrKeyManager.verifyHex(sig, eventIdBytes, pubkey);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     @Override

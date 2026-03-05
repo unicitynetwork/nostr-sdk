@@ -4,9 +4,18 @@ import com.google.i18n.phonenumbers.NumberParseException;
 import com.google.i18n.phonenumbers.PhoneNumberUtil;
 import com.google.i18n.phonenumbers.Phonenumber;
 
+import org.bouncycastle.crypto.digests.SHA256Digest;
+import org.bouncycastle.crypto.generators.HKDFBytesGenerator;
+import org.bouncycastle.crypto.params.HKDFParameters;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Locale;
 
 /**
@@ -30,6 +39,7 @@ public class NametagUtils {
     }
 
     private static final String NAMETAG_SALT = "unicity:nametag:";
+    private static final String ADDRESS_SALT = "unicity:address:";
     private static final PhoneNumberUtil phoneUtil = PhoneNumberUtil.getInstance();
 
     /** Minimum nametag length (after normalization). */
@@ -150,6 +160,127 @@ public class NametagUtils {
         int totalCount = str.length();
         // More than 50% digits and at least 7 digits total
         return digitCount >= 7 && (float) digitCount / totalCount > 0.5f;
+    }
+
+    /**
+     * Compute SHA-256 hash of a string.
+     * Public so other classes (e.g., NametagBinding) can use it for d-tag generation.
+     *
+     * @param input Input string
+     * @return Hex-encoded hash
+     */
+    public static String sha256Hex(String input) {
+        return sha256(input);
+    }
+
+    /**
+     * Hash an address for use as an indexed relay tag.
+     * Enables reverse lookup: address -> binding event.
+     *
+     * @param address Address string (e.g., DIRECT://..., alpha1..., PROXY://...)
+     * @return Hex-encoded SHA-256 hash
+     */
+    public static String hashAddressForTag(String address) {
+        return sha256(ADDRESS_SALT + address);
+    }
+
+    /**
+     * Encrypt a nametag with AES-GCM using a key derived from the private key via HKDF.
+     * Enables nametag recovery on wallet import.
+     *
+     * @param nametag Plain text nametag
+     * @param privateKeyHex Hex-encoded private key for key derivation
+     * @return Base64-encoded encrypted data (IV + ciphertext + auth tag)
+     * @throws Exception if encryption fails
+     */
+    public static String encryptNametag(String nametag, String privateKeyHex) throws Exception {
+        byte[] key = deriveNametagEncryptionKey(privateKeyHex);
+        byte[] iv = new byte[12];
+        new SecureRandom().nextBytes(iv);
+        byte[] data = nametag.getBytes(StandardCharsets.UTF_8);
+
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
+        GCMParameterSpec gcmSpec = new GCMParameterSpec(128, iv);
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
+        byte[] encrypted = cipher.doFinal(data);
+
+        // Combine IV + ciphertext (includes auth tag)
+        byte[] combined = new byte[iv.length + encrypted.length];
+        System.arraycopy(iv, 0, combined, 0, iv.length);
+        System.arraycopy(encrypted, 0, combined, iv.length, encrypted.length);
+
+        return Base64.getEncoder().encodeToString(combined);
+    }
+
+    /**
+     * Decrypt a nametag encrypted with encryptNametag().
+     *
+     * @param encryptedBase64 Base64-encoded encrypted data (IV + ciphertext + auth tag)
+     * @param privateKeyHex Hex-encoded private key for key derivation
+     * @return Decrypted nametag, or null if decryption fails (wrong key)
+     */
+    public static String decryptNametag(String encryptedBase64, String privateKeyHex) {
+        try {
+            byte[] key = deriveNametagEncryptionKey(privateKeyHex);
+            byte[] combined = Base64.getDecoder().decode(encryptedBase64);
+
+            byte[] iv = new byte[12];
+            System.arraycopy(combined, 0, iv, 0, 12);
+            byte[] ciphertext = new byte[combined.length - 12];
+            System.arraycopy(combined, 12, ciphertext, 0, ciphertext.length);
+
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            SecretKeySpec keySpec = new SecretKeySpec(key, "AES");
+            GCMParameterSpec gcmSpec = new GCMParameterSpec(128, iv);
+            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
+            byte[] decrypted = cipher.doFinal(ciphertext);
+
+            return new String(decrypted, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Derive an AES-256 encryption key from a private key using HKDF-SHA256.
+     * Must match the TypeScript implementation exactly:
+     * - IKM = hex-decoded private key bytes
+     * - Salt = SHA256("sphere-nametag-salt")
+     * - Info = "nametag-encryption"
+     * - Output = 32 bytes
+     */
+    private static byte[] deriveNametagEncryptionKey(String privateKeyHex) {
+        byte[] privateKeyBytes = hexToBytes(privateKeyHex);
+        byte[] saltInput = "sphere-nametag-salt".getBytes(StandardCharsets.UTF_8);
+
+        // SHA256 the salt input (matching TS: sha256(saltInput))
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] salt = digest.digest(saltInput);
+
+            byte[] info = "nametag-encryption".getBytes(StandardCharsets.UTF_8);
+
+            // HKDF using BouncyCastle
+            HKDFBytesGenerator hkdf = new HKDFBytesGenerator(new SHA256Digest());
+            hkdf.init(new HKDFParameters(privateKeyBytes, salt, info));
+            byte[] derivedKey = new byte[32];
+            hkdf.generateBytes(derivedKey, 0, 32);
+            return derivedKey;
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * Convert hex string to byte array.
+     */
+    private static byte[] hexToBytes(String hex) {
+        byte[] bytes = new byte[hex.length() / 2];
+        for (int i = 0; i < hex.length(); i += 2) {
+            bytes[i / 2] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+        }
+        return bytes;
     }
 
     /**

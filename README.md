@@ -9,7 +9,9 @@ Java SDK for Nostr protocol integration with Unicity blockchain applications.
 - **NIP-44 Encryption**: Modern ChaCha20-Poly1305 AEAD encryption with HKDF key derivation
 - **Token Transfers**: Send and receive Unicity tokens via Nostr encrypted messages
 - **Payment Requests**: Request payments from other users via encrypted Nostr messages
-- **Nametag Bindings**: Map Unicity nametags to Nostr public keys for discovery
+- **Nametag Bindings**: Map Unicity nametags to Nostr public keys with anti-hijacking protection
+- **Identity Bindings**: Publish extended identity (chain pubkey, L1 address, direct/proxy addresses) with reverse lookup
+- **Anti-Hijacking**: First-seen-wins resolution with signature verification prevents nametag takeover
 - **NIP-04 Encryption**: Legacy AES-CBC encrypted direct messages with automatic compression
 - **Location Broadcasting**: Agent location discovery for P2P networks
 - **Profile Management**: Standard Nostr profiles (NIP-01)
@@ -322,14 +324,46 @@ client.subscribe("payment-requests", filter, event -> {
 
 ```java
 // Publish nametag binding (maps your nametag to your Nostr pubkey)
+// Automatically checks for conflicts — throws if already claimed by another pubkey
 client.publishNametagBinding("alice", "unicity-address-here")
-    .thenAccept(eventId -> {
-        System.out.println("Binding published: " + eventId);
+    .thenAccept(success -> {
+        System.out.println("Binding published: " + success);
     });
 
-// Query pubkey by nametag
+// Publish with extended identity information
+NametagBinding.IdentityBindingParams identity = new NametagBinding.IdentityBindingParams(
+    "02abcdef...",       // 33-byte compressed secp256k1 public key
+    "alpha1abc...",      // L1 bech32 address
+    "DIRECT://abc...",   // Direct address
+    "PROXY://abc..."     // Proxy address
+);
+client.publishNametagBinding("alice", "unicity-address-here", identity)
+    .thenAccept(success -> {
+        System.out.println("Binding with identity published: " + success);
+    });
+
+// Publish identity-only binding (no nametag)
+client.publishIdentityBinding(identity)
+    .thenAccept(success -> {
+        System.out.println("Identity binding published: " + success);
+    });
+
+// Query pubkey by nametag (uses first-seen-wins anti-hijacking resolution)
 String pubkey = client.queryPubkeyByNametag("alice").get();
 System.out.println("Found pubkey: " + pubkey);
+
+// Query full binding info by nametag (includes identity fields)
+NametagBinding.BindingInfo info = client.queryBindingByNametag("alice").get();
+if (info != null) {
+    System.out.println("Transport pubkey: " + info.getTransportPubkey());
+    System.out.println("Chain pubkey: " + info.getPublicKey());
+    System.out.println("L1 address: " + info.getL1Address());
+    System.out.println("Direct address: " + info.getDirectAddress());
+    System.out.println("Nametag: " + info.getNametag());
+}
+
+// Reverse lookup: find binding by address
+NametagBinding.BindingInfo binding = client.queryBindingByAddress("DIRECT://abc...").get();
 ```
 
 ### Agent Location Broadcasting
@@ -469,8 +503,31 @@ See [PAYMENT_REQUEST_PROTOCOL.md](PAYMENT_REQUEST_PROTOCOL.md) for detailed prot
 ### Nametag Binding Protocol
 
 - **Event Kind**: 30078 (parameterized replaceable)
-- **Privacy**: Nametags are hashed before publishing
-- **Tags**: `d` (hashed nametag), `nametag`, `t`, `address`
+- **Privacy**: Nametags are hashed before publishing; encrypted copy stored for wallet recovery
+- **Tags**: `d` (hashed nametag), `nametag`, `t` (indexed hashes for nametag + addresses), `address`, `pubkey`, `l1`
+- **Anti-hijacking**: First-seen-wins resolution across authors; latest-wins for same author
+- **Signature verification**: Events with invalid signatures are silently rejected during queries
+- **Conflict detection**: `publishNametagBinding()` checks for existing claims before publishing
+
+#### Identity Binding Events
+
+Identity bindings store chain-level identity without requiring a nametag:
+- **d-tag**: `SHA256('unicity:identity:' + nostrPubkey)` — one per wallet
+- **Content**: `public_key`, `l1_address`, `direct_address`, `proxy_address`
+- **Indexed tags**: Hashed `t` tags for each address enable reverse lookup
+
+#### Nametag Encryption
+
+When identity params are provided, the plaintext nametag is encrypted with AES-256-GCM using an HKDF-derived key from the wallet's private key. This enables nametag recovery on wallet import without exposing the plaintext in relay-indexed tags.
+
+#### Query Resolution Strategy
+
+All nametag/address queries use first-seen-wins anti-hijacking:
+1. Collect all matching events from relay (no `limit`)
+2. Verify each event's Schnorr signature (reject forged events)
+3. Track per-author earliest `created_at` and latest event
+4. Winner = author with smallest first appearance; tie-break by lexicographic pubkey
+5. Return data from the winner's latest event (most complete)
 
 ## Dependencies
 

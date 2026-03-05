@@ -534,21 +534,65 @@ public class NostrClient {
 
     /**
      * Publish a nametag binding.
+     * Checks for existing claims by other pubkeys before publishing.
      *
      * @param nametagId Nametag identifier
      * @param unicityAddress Unicity blockchain address
-     * @return CompletableFuture indicating success
+     * @return CompletableFuture indicating success (completes exceptionally if claimed by another pubkey)
      */
     public CompletableFuture<Boolean> publishNametagBinding(String nametagId, String unicityAddress) {
+        return publishNametagBinding(nametagId, unicityAddress, null);
+    }
+
+    /**
+     * Publish a nametag binding with optional identity parameters.
+     * Checks for existing claims by other pubkeys before publishing.
+     *
+     * @param nametagId Nametag identifier
+     * @param unicityAddress Unicity blockchain address
+     * @param identity Optional extended identity parameters
+     * @return CompletableFuture indicating success (completes exceptionally if claimed by another pubkey)
+     */
+    public CompletableFuture<Boolean> publishNametagBinding(String nametagId, String unicityAddress,
+                                                              NametagBinding.IdentityBindingParams identity) {
+        return queryPubkeyByNametag(nametagId).thenCompose(existingOwner -> {
+            if (existingOwner != null && !existingOwner.equals(keyManager.getPublicKeyHex())) {
+                CompletableFuture<Boolean> failed = new CompletableFuture<>();
+                failed.completeExceptionally(new Exception(
+                    "Nametag \"" + nametagId + "\" is already claimed by another pubkey"));
+                return failed;
+            }
+
+            try {
+                String hashedNametag = NametagUtils.hashNametag(nametagId);
+                logger.info("Publishing nametag binding: '{}' (hashed: {}...) -> pubkey {}...",
+                    nametagId, hashedNametag.substring(0, 16), keyManager.getPublicKeyHex().substring(0, 16));
+                Event event = NametagBinding.createBindingEvent(keyManager, nametagId, unicityAddress, "US", identity);
+                return publishEvent(event).thenApply(eventId -> {
+                    logger.info("Nametag binding published successfully: eventId={}...",
+                        eventId.substring(0, Math.min(16, eventId.length())));
+                    return true;
+                });
+            } catch (Exception e) {
+                CompletableFuture<Boolean> failed = new CompletableFuture<>();
+                failed.completeExceptionally(e);
+                return failed;
+            }
+        });
+    }
+
+    /**
+     * Publish a base identity binding (no nametag).
+     * Uses d-tag = SHA256('unicity:identity:' + nostrPubkey) so each wallet
+     * has exactly one identity binding. Subsequent calls replace the previous event.
+     *
+     * @param identity Identity parameters (publicKey, l1Address, directAddress)
+     * @return CompletableFuture indicating success
+     */
+    public CompletableFuture<Boolean> publishIdentityBinding(NametagBinding.IdentityBindingParams identity) {
         try {
-            String hashedNametag = NametagUtils.hashNametag(nametagId);
-            logger.info("Publishing nametag binding: '{}' (hashed: {}...) -> pubkey {}...",
-                nametagId, hashedNametag.substring(0, 16), keyManager.getPublicKeyHex().substring(0, 16));
-            Event event = NametagBinding.createBindingEvent(keyManager, nametagId, unicityAddress);
-            return publishEvent(event).thenApply(eventId -> {
-                logger.info("Nametag binding published successfully: eventId={}...", eventId.substring(0, 16));
-                return true;
-            });
+            Event event = NametagBinding.createIdentityBindingEvent(keyManager, identity);
+            return publishEvent(event).thenApply(eventId -> true);
         } catch (Exception e) {
             CompletableFuture<Boolean> future = new CompletableFuture<>();
             future.completeExceptionally(e);
@@ -558,50 +602,127 @@ public class NostrClient {
 
     /**
      * Query Nostr pubkey by nametag.
+     * Uses first-seen-wins anti-hijacking resolution.
      *
      * @param nametagId Nametag identifier
      * @return CompletableFuture with pubkey (hex) or null if not found
      */
     public CompletableFuture<String> queryPubkeyByNametag(String nametagId) {
-        CompletableFuture<String> future = new CompletableFuture<>();
-
-        // Log the query for debugging
         String hashedNametag = NametagUtils.hashNametag(nametagId);
         logger.info("Querying nametag '{}' (hashed: {}...)", nametagId, hashedNametag.substring(0, 16));
 
         Filter filter = NametagBinding.createNametagToPubkeyFilter(nametagId);
+        return queryWithFirstSeenWins(filter, Event::getPubkey);
+    }
+
+    /**
+     * Query for full binding info by nametag.
+     * Returns extended identity fields (chain pubkey, addresses, etc.) when available.
+     * Uses first-seen-wins across authors, latest-wins for same author.
+     *
+     * @param nametagId Nametag identifier
+     * @return CompletableFuture with BindingInfo, or null if not found
+     */
+    public CompletableFuture<NametagBinding.BindingInfo> queryBindingByNametag(String nametagId) {
+        Filter filter = NametagBinding.createNametagToPubkeyFilter(nametagId);
+        return queryWithFirstSeenWins(filter, NametagBinding::parseBindingInfo);
+    }
+
+    /**
+     * Query for binding info by address (reverse lookup).
+     * Supports DIRECT://, PROXY://, alpha1..., or chain pubkey lookups.
+     * Uses first-seen-wins across authors, latest-wins for same author.
+     *
+     * @param address Address string
+     * @return CompletableFuture with BindingInfo, or null if not found
+     */
+    public CompletableFuture<NametagBinding.BindingInfo> queryBindingByAddress(String address) {
+        Filter filter = NametagBinding.createAddressToBindingFilter(address);
+        return queryWithFirstSeenWins(filter, NametagBinding::parseBindingInfo);
+    }
+
+    /**
+     * Query binding events with first-seen-wins anti-hijacking resolution.
+     *
+     * Strategy: first-seen-wins across authors, latest-wins for same author.
+     * - Across authors: the pubkey that first published wins (earliest created_at)
+     * - Same author: the most recent event is used (latest created_at = most complete data)
+     * - Tie-breaking: deterministic by lexicographic pubkey comparison (lowest wins)
+     *
+     * Events with invalid signatures are silently skipped to prevent relay injection attacks.
+     *
+     * @param filter Subscription filter
+     * @param extractResult Function to extract the desired result from the winning event
+     * @return CompletableFuture resolving to the extracted result, or null
+     */
+    private <T> CompletableFuture<T> queryWithFirstSeenWins(Filter filter,
+                                                             java.util.function.Function<Event, T> extractResult) {
+        CompletableFuture<T> future = new CompletableFuture<>();
         String subscriptionId = "query-" + UUID.randomUUID().toString().substring(0, 8);
 
-        // Temporary listener for this query
+        // Track per-author earliest seen and latest event
+        Map<String, long[]> authorFirstSeen = new ConcurrentHashMap<>(); // pubkey -> [firstSeen]
+        Map<String, Event> authorLatestEvent = new ConcurrentHashMap<>(); // pubkey -> latestEvent
+
         NostrEventListener listener = new NostrEventListener() {
             @Override
             public void onEvent(Event event) {
-                logger.debug("Nametag query got event: kind={}, pubkey={}...",
-                    event.getKind(), event.getPubkey().substring(0, 16));
-                if (event.getKind() == EventKinds.APP_DATA) {
-                    logger.info("Found nametag binding for '{}', pubkey: {}...",
-                        nametagId, event.getPubkey().substring(0, 16));
-                    future.complete(event.getPubkey());
-                    unsubscribe(subscriptionId);
+                // Verify signature to prevent relay injection of forged events
+                if (!event.verify()) {
+                    logger.debug("Skipping event with invalid signature: {}", event.getId());
+                    return;
                 }
+
+                String pubkey = event.getPubkey();
+                long createdAt = event.getCreatedAt();
+
+                authorFirstSeen.compute(pubkey, (k, v) -> {
+                    if (v == null) return new long[]{createdAt};
+                    v[0] = Math.min(v[0], createdAt);
+                    return v;
+                });
+
+                authorLatestEvent.compute(pubkey, (k, existing) -> {
+                    if (existing == null || createdAt > existing.getCreatedAt()) {
+                        return event;
+                    }
+                    return existing;
+                });
             }
 
             @Override
             public void onEndOfStoredEvents(String subId) {
-                if (!future.isDone()) {
-                    logger.warn("Nametag '{}' not found (EOSE received with no results)", nametagId);
+                unsubscribe(subscriptionId);
+
+                if (authorFirstSeen.isEmpty()) {
                     future.complete(null);
-                    unsubscribe(subscriptionId);
+                    return;
                 }
+
+                // Find the winner: earliest firstSeen, then lexicographic pubkey for tie-break
+                String winnerPubkey = null;
+                long winnerFirstSeen = Long.MAX_VALUE;
+                for (Map.Entry<String, long[]> entry : authorFirstSeen.entrySet()) {
+                    String pubkey = entry.getKey();
+                    long firstSeen = entry.getValue()[0];
+                    if (firstSeen < winnerFirstSeen
+                        || (firstSeen == winnerFirstSeen && (winnerPubkey == null || pubkey.compareTo(winnerPubkey) < 0))) {
+                        winnerFirstSeen = firstSeen;
+                        winnerPubkey = pubkey;
+                    }
+                }
+
+                Event winnerEvent = authorLatestEvent.get(winnerPubkey);
+                future.complete(winnerEvent != null ? extractResult.apply(winnerEvent) : null);
             }
         };
 
         subscribe(subscriptionId, filter, listener);
 
-        // Timeout using configurable queryTimeoutMs
+        // Timeout
         CompletableFuture.delayedExecutor(queryTimeoutMs, TimeUnit.MILLISECONDS).execute(() -> {
             if (!future.isDone()) {
-                logger.warn("Nametag '{}' query timed out after {}ms", nametagId, queryTimeoutMs);
+                logger.warn("Query timed out after {}ms", queryTimeoutMs);
                 future.complete(null);
                 unsubscribe(subscriptionId);
             }

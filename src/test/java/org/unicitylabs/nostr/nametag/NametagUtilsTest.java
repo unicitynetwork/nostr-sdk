@@ -169,6 +169,74 @@ public class NametagUtilsTest {
     }
 
     // =========================================================================
+    // hashAddressForTag
+    // =========================================================================
+
+    @Test
+    public void shouldProduceConsistentAddressHashes() {
+        String hash1 = NametagUtils.hashAddressForTag("DIRECT://test");
+        String hash2 = NametagUtils.hashAddressForTag("DIRECT://test");
+        assertEquals(hash1, hash2);
+    }
+
+    @Test
+    public void shouldProduceAddressHashAs64CharHex() {
+        String hash = NametagUtils.hashAddressForTag("alpha1test");
+        assertEquals(64, hash.length());
+        assertTrue(hash.matches("^[0-9a-f]+$"));
+    }
+
+    @Test
+    public void shouldProduceDifferentHashesForDifferentAddresses() {
+        String hash1 = NametagUtils.hashAddressForTag("DIRECT://a");
+        String hash2 = NametagUtils.hashAddressForTag("DIRECT://b");
+        assertNotEquals(hash1, hash2);
+    }
+
+    // =========================================================================
+    // sha256Hex
+    // =========================================================================
+
+    @Test
+    public void shouldExposePublicSha256Hex() {
+        String hash = NametagUtils.sha256Hex("test");
+        assertEquals(64, hash.length());
+        assertTrue(hash.matches("^[0-9a-f]+$"));
+    }
+
+    // =========================================================================
+    // encryptNametag / decryptNametag
+    // =========================================================================
+
+    @Test
+    public void shouldRoundTripEncryptAndDecryptNametag() throws Exception {
+        org.unicitylabs.nostr.crypto.NostrKeyManager km = org.unicitylabs.nostr.crypto.NostrKeyManager.generate();
+        String encrypted = NametagUtils.encryptNametag("alice", km.getPrivateKeyHex());
+        assertNotNull(encrypted);
+        assertTrue(encrypted.length() > 0);
+
+        String decrypted = NametagUtils.decryptNametag(encrypted, km.getPrivateKeyHex());
+        assertEquals("alice", decrypted);
+    }
+
+    @Test
+    public void shouldReturnNullWhenDecryptingWithWrongKey() throws Exception {
+        org.unicitylabs.nostr.crypto.NostrKeyManager km1 = org.unicitylabs.nostr.crypto.NostrKeyManager.generate();
+        org.unicitylabs.nostr.crypto.NostrKeyManager km2 = org.unicitylabs.nostr.crypto.NostrKeyManager.generate();
+        String encrypted = NametagUtils.encryptNametag("alice", km1.getPrivateKeyHex());
+
+        String decrypted = NametagUtils.decryptNametag(encrypted, km2.getPrivateKeyHex());
+        assertNull(decrypted);
+    }
+
+    @Test
+    public void shouldReturnNullForInvalidBase64Input() {
+        org.unicitylabs.nostr.crypto.NostrKeyManager km = org.unicitylabs.nostr.crypto.NostrKeyManager.generate();
+        String decrypted = NametagUtils.decryptNametag("not-valid-base64!!!", km.getPrivateKeyHex());
+        assertNull(decrypted);
+    }
+
+    // =========================================================================
     // constants
     // =========================================================================
 
