@@ -14,7 +14,7 @@ import java.security.MessageDigest;
 import java.util.*;
 
 /**
- * Manages Unicity nametag -> Nostr pubkey bindings using replaceable events.
+ * Manages Unicity nametag-to-Nostr pubkey bindings using replaceable events.
  * One-directional: nametag resolves to pubkey (not reverse).
  * Uses hashed nametags for privacy.
  */
@@ -282,7 +282,7 @@ public class NametagBinding {
 
     /**
      * Create a filter to query binding events by address hash.
-     * Query direction: address -> binding event.
+     * Query direction: address to binding event.
      *
      * @param address Address string (DIRECT://..., alpha1..., PROXY://..., or chain pubkey)
      * @return Filter for nametag binding events

@@ -175,7 +175,7 @@ public class NametagUtils {
 
     /**
      * Hash an address for use as an indexed relay tag.
-     * Enables reverse lookup: address -> binding event.
+     * Enables reverse lookup: address to binding event.
      *
      * @param address Address string (e.g., DIRECT://..., alpha1..., PROXY://...)
      * @return Hex-encoded SHA-256 hash
