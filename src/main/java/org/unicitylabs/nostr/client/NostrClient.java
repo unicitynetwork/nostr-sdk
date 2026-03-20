@@ -853,7 +853,7 @@ public class NostrClient {
         private boolean wasConnected = false;
         private int reconnectAttempts = 0;
         private volatile long lastPongTime = System.currentTimeMillis();
-        private volatile long lastPingSentTime = 0;
+        private volatile int unansweredPings = 0;
         private ScheduledFuture<?> pingTimer = null;
 
         RelayConnection(String url, CompletableFuture<Void> connectFuture) {
@@ -913,27 +913,24 @@ public class NostrClient {
                     return;
                 }
 
-                long now = System.currentTimeMillis();
-                long timeSinceLastPong = now - lastPongTime;
+                long timeSinceLastPong = System.currentTimeMillis() - lastPongTime;
 
-                if (timeSinceLastPong > pingIntervalMs * 2L) {
-                    // Only declare stale if we actually sent a ping recently.
-                    // If the timer was delayed (e.g., Android doze mode), we haven't sent
-                    // a ping recently, so we can't conclude the relay is stale — just send
-                    // a new ping and check again on the next interval.
-                    long timeSinceLastPing = now - lastPingSentTime;
-                    if (lastPingSentTime > 0 && timeSinceLastPing < pingIntervalMs * 1.5) {
-                        // We sent a ping recently and got no response - connection is truly stale
-                        logger.warn("Relay {} appears stale (no response for {}ms), reconnecting...", url, timeSinceLastPong);
-                        stopPingTimer();
-                        try {
-                            webSocket.cancel();
-                        } catch (Exception e) {
-                            // Ignore close errors
-                        }
-                        return;
+                if (timeSinceLastPong > pingIntervalMs * 2L && unansweredPings >= 2) {
+                    // No inbound message for 2x the ping interval AND we've sent at least 2 pings
+                    // without any response — the connection is truly stale.
+                    // The unanswered pings gate handles timer throttling (e.g., Android doze mode):
+                    // on the first tick after waking, unansweredPings is 0, so we send a ping and
+                    // wait. If the relay is alive it responds (resetting the counter). If dead,
+                    // subsequent ticks increment the counter until it reaches the threshold.
+                    logger.warn("Relay {} appears stale (no response for {}ms, {} unanswered pings), reconnecting...",
+                            url, timeSinceLastPong, unansweredPings);
+                    stopPingTimer();
+                    try {
+                        webSocket.cancel();
+                    } catch (Exception e) {
+                        // Ignore close errors
                     }
-                    // Timer was likely delayed — fall through to send a ping
+                    return;
                 }
 
                 // Send a subscription request as a ping (relays respond with EOSE)
@@ -942,7 +939,7 @@ public class NostrClient {
                     webSocket.send(closeMessage);
                     String pingMessage = jsonMapper.writeValueAsString(Arrays.asList("REQ", "ping", Collections.singletonMap("limit", 1)));
                     webSocket.send(pingMessage);
-                    lastPingSentTime = now;
+                    unansweredPings++;
                 } catch (Exception e) {
                     logger.warn("Ping to {} failed, reconnecting...", url);
                     stopPingTimer();
@@ -979,7 +976,7 @@ public class NostrClient {
             // Reset reconnect attempts on successful connection
             resetReconnectAttempts();
             lastPongTime = System.currentTimeMillis();
-            lastPingSentTime = 0;
+            unansweredPings = 0;
 
             // Start application-level ping health check
             startPingTimer();
@@ -1026,8 +1023,9 @@ public class NostrClient {
 
         @Override
         public void onMessage(WebSocket webSocket, String text) {
-            // Update last pong time on any message (relay is alive)
+            // Update last pong time and reset unanswered pings on any message (relay is alive)
             lastPongTime = System.currentTimeMillis();
+            unansweredPings = 0;
 
             try {
                 // Check for AUTH message first (NIP-42)

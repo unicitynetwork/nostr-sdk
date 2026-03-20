@@ -186,16 +186,22 @@ public class NostrClientReconnectionTest {
     }
 
     @Test
-    public void testStaleConnectionDetectionWithRecentPing() {
+    public void testStaleDetectionRequiresBothConditions() {
         int pingInterval = 30000;
         int staleThreshold = pingInterval * 2;
         long now = System.currentTimeMillis();
 
-        // Stale pong AND recent ping sent → truly stale
+        // Both conditions needed: time threshold exceeded AND enough unanswered pings
         long stalePong = now - staleThreshold - 1000;
-        long recentPing = now - pingInterval; // sent one interval ago
         assertTrue(isStale(stalePong, now, staleThreshold));
-        assertTrue(recentPing > 0 && (now - recentPing) < pingInterval * 1.5);
+
+        // With 2 unanswered pings → should be stale
+        assertTrue(shouldDeclareStale(stalePong, now, staleThreshold, 2));
+        assertTrue(shouldDeclareStale(stalePong, now, staleThreshold, 5));
+
+        // With < 2 unanswered pings → not stale yet (even if time threshold exceeded)
+        assertFalse(shouldDeclareStale(stalePong, now, staleThreshold, 0));
+        assertFalse(shouldDeclareStale(stalePong, now, staleThreshold, 1));
     }
 
     @Test
@@ -205,12 +211,14 @@ public class NostrClientReconnectionTest {
         long now = System.currentTimeMillis();
 
         // Fresh connection - just received pong
-        long recentPong = now - 5000; // 5 seconds ago
-        assertFalse(isStale(recentPong, now, staleThreshold));
+        long recentPong = now - 5000;
+        assertFalse(shouldDeclareStale(recentPong, now, staleThreshold, 0));
+        // Even with unanswered pings, time threshold not met
+        assertFalse(shouldDeclareStale(recentPong, now, staleThreshold, 5));
     }
 
     @Test
-    public void testThrottledTimerNotStale() {
+    public void testUnansweredPingsCounterPreventsImmediateStaleOnWake() {
         int pingInterval = 30000;
         int staleThreshold = pingInterval * 2;
         long now = System.currentTimeMillis();
@@ -219,10 +227,15 @@ public class NostrClientReconnectionTest {
         long stalePong = now - 65000;
         assertTrue(isStale(stalePong, now, staleThreshold));
 
-        // But the last ping was also 65s ago (timer was throttled, no recent ping sent)
-        long oldPing = now - 65000;
-        // Pong threshold exceeded, but ping wasn't sent recently — not truly stale
-        assertFalse(oldPing > 0 && (now - oldPing) < pingInterval * 1.5);
+        // But unansweredPings is 0 (no pings sent during throttled period)
+        // → not declared stale, send a ping first
+        assertFalse(shouldDeclareStale(stalePong, now, staleThreshold, 0));
+
+        // After first ping is sent without response → unansweredPings=1, still not stale
+        assertFalse(shouldDeclareStale(stalePong, now, staleThreshold, 1));
+
+        // After second ping is sent without response → unansweredPings=2, NOW stale
+        assertTrue(shouldDeclareStale(stalePong, now, staleThreshold, 2));
     }
 
     @Test
@@ -262,8 +275,13 @@ public class NostrClientReconnectionTest {
         return Math.min(delay, maxDelay);
     }
 
-    // Helper method to check if connection is stale
+    // Helper method to check if connection is stale (time-only check)
     private boolean isStale(long lastPongTime, long currentTime, int staleThreshold) {
         return (currentTime - lastPongTime) > staleThreshold;
+    }
+
+    // Helper method mirroring actual stale detection: requires both time threshold AND unanswered pings
+    private boolean shouldDeclareStale(long lastPongTime, long currentTime, int staleThreshold, int unansweredPings) {
+        return (currentTime - lastPongTime) > staleThreshold && unansweredPings >= 2;
     }
 }
