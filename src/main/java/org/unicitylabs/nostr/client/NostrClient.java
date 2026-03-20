@@ -852,6 +852,9 @@ public class NostrClient {
         private boolean connected = false;
         private boolean wasConnected = false;
         private int reconnectAttempts = 0;
+        private volatile long lastPongTime = System.currentTimeMillis();
+        private volatile long lastPingSentTime = 0;
+        private ScheduledFuture<?> pingTimer = null;
 
         RelayConnection(String url, CompletableFuture<Void> connectFuture) {
             this.url = url;
@@ -893,9 +896,69 @@ public class NostrClient {
         }
 
         void close() {
+            stopPingTimer();
             if (webSocket != null) {
                 webSocket.close(1000, "Client disconnect");
                 connected = false;
+            }
+        }
+
+        void startPingTimer() {
+            stopPingTimer();
+            if (pingIntervalMs <= 0) return;
+
+            pingTimer = reconnectExecutor.scheduleAtFixedRate(() -> {
+                if (!connected || webSocket == null) {
+                    stopPingTimer();
+                    return;
+                }
+
+                long now = System.currentTimeMillis();
+                long timeSinceLastPong = now - lastPongTime;
+
+                if (timeSinceLastPong > pingIntervalMs * 2L) {
+                    // Only declare stale if we actually sent a ping recently.
+                    // If the timer was delayed (e.g., Android doze mode), we haven't sent
+                    // a ping recently, so we can't conclude the relay is stale — just send
+                    // a new ping and check again on the next interval.
+                    long timeSinceLastPing = now - lastPingSentTime;
+                    if (lastPingSentTime > 0 && timeSinceLastPing < pingIntervalMs * 1.5) {
+                        // We sent a ping recently and got no response - connection is truly stale
+                        logger.warn("Relay {} appears stale (no response for {}ms), reconnecting...", url, timeSinceLastPong);
+                        stopPingTimer();
+                        try {
+                            webSocket.cancel();
+                        } catch (Exception e) {
+                            // Ignore close errors
+                        }
+                        return;
+                    }
+                    // Timer was likely delayed — fall through to send a ping
+                }
+
+                // Send a subscription request as a ping (relays respond with EOSE)
+                try {
+                    String closeMessage = jsonMapper.writeValueAsString(Arrays.asList("CLOSE", "ping"));
+                    webSocket.send(closeMessage);
+                    String pingMessage = jsonMapper.writeValueAsString(Arrays.asList("REQ", "ping", Collections.singletonMap("limit", 1)));
+                    webSocket.send(pingMessage);
+                    lastPingSentTime = now;
+                } catch (Exception e) {
+                    logger.warn("Ping to {} failed, reconnecting...", url);
+                    stopPingTimer();
+                    try {
+                        webSocket.cancel();
+                    } catch (Exception ex) {
+                        // Ignore close errors
+                    }
+                }
+            }, pingIntervalMs, pingIntervalMs, TimeUnit.MILLISECONDS);
+        }
+
+        void stopPingTimer() {
+            if (pingTimer != null) {
+                pingTimer.cancel(false);
+                pingTimer = null;
             }
         }
 
@@ -915,6 +978,11 @@ public class NostrClient {
 
             // Reset reconnect attempts on successful connection
             resetReconnectAttempts();
+            lastPongTime = System.currentTimeMillis();
+            lastPingSentTime = 0;
+
+            // Start application-level ping health check
+            startPingTimer();
 
             if (connectFuture != null && !connectFuture.isDone()) {
                 connectFuture.complete(null);
@@ -958,6 +1026,9 @@ public class NostrClient {
 
         @Override
         public void onMessage(WebSocket webSocket, String text) {
+            // Update last pong time on any message (relay is alive)
+            lastPongTime = System.currentTimeMillis();
+
             try {
                 // Check for AUTH message first (NIP-42)
                 if (text.startsWith("[\"AUTH\"")) {
@@ -1028,6 +1099,7 @@ public class NostrClient {
         public void onFailure(WebSocket webSocket, Throwable t, Response response) {
             boolean wasConnectedBefore = connected;
             connected = false;
+            stopPingTimer();
 
             // Don't log EOFException as ERROR during intentional disconnect
             // EOFException happens when we close the socket during disconnect()
@@ -1100,6 +1172,7 @@ public class NostrClient {
         @Override
         public void onClosed(WebSocket webSocket, int code, String reason) {
             connected = false;
+            stopPingTimer();
             logger.info("Relay closed: {} - {} (code: {})", url, reason, code);
 
             // Emit disconnect event

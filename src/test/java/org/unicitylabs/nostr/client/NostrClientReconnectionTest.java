@@ -186,18 +186,43 @@ public class NostrClientReconnectionTest {
     }
 
     @Test
-    public void testStaleConnectionDetection() {
+    public void testStaleConnectionDetectionWithRecentPing() {
         int pingInterval = 30000;
         int staleThreshold = pingInterval * 2;
+        long now = System.currentTimeMillis();
+
+        // Stale pong AND recent ping sent → truly stale
+        long stalePong = now - staleThreshold - 1000;
+        long recentPing = now - pingInterval; // sent one interval ago
+        assertTrue(isStale(stalePong, now, staleThreshold));
+        assertTrue(recentPing > 0 && (now - recentPing) < pingInterval * 1.5);
+    }
+
+    @Test
+    public void testFreshConnectionNotStale() {
+        int pingInterval = 30000;
+        int staleThreshold = pingInterval * 2;
+        long now = System.currentTimeMillis();
 
         // Fresh connection - just received pong
-        long now = System.currentTimeMillis();
         long recentPong = now - 5000; // 5 seconds ago
         assertFalse(isStale(recentPong, now, staleThreshold));
+    }
 
-        // Stale connection - no pong for too long
-        long stalePong = now - staleThreshold - 1000; // Beyond threshold
+    @Test
+    public void testThrottledTimerNotStale() {
+        int pingInterval = 30000;
+        int staleThreshold = pingInterval * 2;
+        long now = System.currentTimeMillis();
+
+        // Timer was throttled (e.g., Android doze): last pong was 65s ago
+        long stalePong = now - 65000;
         assertTrue(isStale(stalePong, now, staleThreshold));
+
+        // But the last ping was also 65s ago (timer was throttled, no recent ping sent)
+        long oldPing = now - 65000;
+        // Pong threshold exceeded, but ping wasn't sent recently — not truly stale
+        assertFalse(oldPing > 0 && (now - oldPing) < pingInterval * 1.5);
     }
 
     @Test
