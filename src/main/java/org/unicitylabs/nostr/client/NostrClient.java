@@ -739,9 +739,18 @@ public class NostrClient {
 
             @Override
             public void onEndOfStoredEvents(String subId) {
+                // EOSE means *this relay* has finished delivering
+                // stored events. In a multi-relay client we must not
+                // settle yet — a slower relay may still be about to
+                // deliver matching events. Settle only when every
+                // connected relay has either EOSE'd OR CLOSED'd this
+                // sub. Single-relay clients are unaffected: with one
+                // relay, allRelaysDoneFor is trivially true.
                 if (future.isDone()) return;
-                unsubscribe(subscriptionId);
-                future.complete(pickWinner.get());
+                if (allRelaysDoneFor(subscriptionId)) {
+                    unsubscribe(subscriptionId);
+                    future.complete(pickWinner.get());
+                }
             }
 
             @Override
@@ -758,15 +767,12 @@ public class NostrClient {
                 // state across all connected relays.
                 if (future.isDone()) return;
                 logger.warn("Relay closed subscription {}: {}", subId, error);
-                boolean allClosed = relayConnections.values().stream()
-                        .filter(RelayConnection::isConnected)
-                        .allMatch(rc -> rc.closedSubIds.contains(subscriptionId));
-                if (allClosed) {
+                if (allRelaysDoneFor(subscriptionId)) {
                     unsubscribe(subscriptionId);
                     future.complete(pickWinner.get());
                 }
-                // else: keep waiting for EOSE from a healthy relay or
-                // the overall query timeout.
+                // else: keep waiting for EOSE / CLOSED from remaining
+                // relays or the overall query timeout.
             }
         };
 
@@ -782,6 +788,27 @@ public class NostrClient {
         });
 
         return future;
+    }
+
+    /**
+     * True if every currently-connected relay has finished delivering
+     * for the given sub_id (either EOSE'd or CLOSED'd it). Used by
+     * queryWithFirstSeenWins to coordinate multi-relay settlement.
+     */
+    private boolean allRelaysDoneFor(String subscriptionId) {
+        java.util.List<RelayConnection> connected = new java.util.ArrayList<>();
+        for (RelayConnection rc : relayConnections.values()) {
+            if (rc.isConnected()) connected.add(rc);
+        }
+        // No connected relays at all → nothing to wait for; settle.
+        if (connected.isEmpty()) return true;
+        for (RelayConnection rc : connected) {
+            if (!rc.eosedSubIds.contains(subscriptionId)
+                    && !rc.closedSubIds.contains(subscriptionId)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -806,6 +833,16 @@ public class NostrClient {
      */
     public String subscribe(String subscriptionId, Filter filter, NostrEventListener listener) {
         subscriptions.put(subscriptionId, new SubscriptionInfo(filter, listener));
+
+        // Wipe any stale per-relay EOSE/CLOSED markers for this sub_id
+        // before issuing the REQ — otherwise a fresh subscribe with a
+        // sub_id that was previously CLOSED (or was just freshly
+        // EOSE'd) would be skipped or treated as "already done" on
+        // those relays.
+        for (RelayConnection connection : relayConnections.values()) {
+            connection.closedSubIds.remove(subscriptionId);
+            connection.eosedSubIds.remove(subscriptionId);
+        }
 
         try {
             List<Object> reqMessage = new ArrayList<>();
@@ -844,13 +881,14 @@ public class NostrClient {
             for (RelayConnection connection : relayConnections.values()) {
                 // Skip CLOSE on relays that already CLOSED the sub
                 // themselves — no point telling the relay something
-                // it told us. Drop the per-relay marker either way
+                // it told us. Drop both per-relay markers either way
                 // since the sub is gone from the global map.
                 if (connection.isConnected()
                         && !connection.closedSubIds.contains(subscriptionId)) {
                     connection.send(json);
                 }
                 connection.closedSubIds.remove(subscriptionId);
+                connection.eosedSubIds.remove(subscriptionId);
             }
 
             logger.debug("Unsubscribed: {}", subscriptionId);
@@ -923,6 +961,14 @@ public class NostrClient {
         // resubscribeAfterAuth() so previously-rejected pre-auth REQs
         // get re-issued post-AUTH.
         private final java.util.Set<String> closedSubIds =
+                java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
+        // Sub_ids this specific relay has EOSE'd for us. Combined with
+        // closedSubIds, lets queryWithFirstSeenWins decide when ALL
+        // connected relays have finished (either streamed EOSE or
+        // rejected with CLOSED), so a fast relay's EOSE doesn't
+        // settle the query while a slower relay still has matching
+        // events to deliver.
+        private final java.util.Set<String> eosedSubIds =
                 java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
         RelayConnection(String url, CompletableFuture<Void> connectFuture) {
@@ -1061,10 +1107,12 @@ public class NostrClient {
             // fresh socket. Unlike the TS client (which constructs a
             // new RelayConnection per connect), this Java class
             // reuses the same instance across reconnects, so we must
-            // explicitly clear closedSubIds here — otherwise a sub
-            // rejected once stays permanently suppressed for the
-            // life of this RelayConnection.
+            // explicitly clear both closedSubIds and eosedSubIds here
+            // — otherwise a sub rejected (or completed) once stays
+            // permanently flagged for the life of this
+            // RelayConnection.
             closedSubIds.clear();
+            eosedSubIds.clear();
 
             // Start application-level ping health check
             startPingTimer();
@@ -1310,7 +1358,7 @@ public class NostrClient {
                     handleOkMessage(json);
                     break;
                 case "EOSE":
-                    handleEOSEMessage(json);
+                    handleEOSEMessage(relay, json);
                     break;
                 case "NOTICE":
                     handleNoticeMessage(json);
@@ -1355,10 +1403,31 @@ public class NostrClient {
         }
     }
 
-    private void handleEOSEMessage(List<Object> json) {
+    /**
+     * Handle EOSE (End of Stored Events).
+     *
+     * Records the per-relay EOSE marker (mirroring closedSubIds) so
+     * queryWithFirstSeenWins can decide when ALL connected relays
+     * have finished — either streamed EOSE or rejected with CLOSED —
+     * instead of settling off the first fast relay's EOSE while a
+     * slower relay is still about to deliver matching events.
+     *
+     * The {@code relay} argument is nullable for the legacy
+     * test-only path that drives {@code handleRelayMessage(String)}
+     * without a concrete connection.
+     */
+    private void handleEOSEMessage(RelayConnection relay, List<Object> json) {
+        if (json.size() < 2 || !(json.get(1) instanceof String)) return;
         String subscriptionId = (String) json.get(1);
+
         SubscriptionInfo subscription = subscriptions.get(subscriptionId);
-        if (subscription != null && subscription.listener != null) {
+        if (subscription == null) return;
+
+        if (relay != null) {
+            relay.eosedSubIds.add(subscriptionId);
+        }
+
+        if (subscription.listener != null) {
             subscription.listener.onEndOfStoredEvents(subscriptionId);
         }
         logger.debug("EOSE for subscription: {}", subscriptionId);
