@@ -114,17 +114,21 @@ public class RelayFixesE2ETest {
 
     @Test
     public void keepalivePingIsScopedAndNotFirehosed() throws Exception {
+        // The keepalive timer calls NostrClient.buildPingReqMessage()
+        // verbatim each interval and ships the result on the wire,
+        // so verifying that helper's output IS verifying the wire
+        // shape. We assert it via a real connection (cheap) so the
+        // test exercises the full classloader / signing path, not
+        // the helper in isolation. We deliberately do NOT
+        // Thread.sleep to wait for actual ping cycles — Java's
+        // OkHttp WebSocket doesn't give us a per-frame intercept
+        // hook, so the on-wire observation isn't directly
+        // assertable here. The wire shape regression is fully
+        // covered by the helper-output assertion below.
         NostrClient client = new NostrClient(NostrKeyManager.generate());
-        client.setPingIntervalMs(2_000);
         try {
             client.connect(RELAY_URL).get(15, TimeUnit.SECONDS);
 
-            // Wait for two ping cycles.
-            Thread.sleep(5_000);
-
-            // The most direct assertion in Java is via the static helper —
-            // it produces the exact frame the timer sends. Verifying that
-            // shape here also guards against future drift in the timer.
             String selfPubkey = client.getKeyManager().getPublicKeyHex();
             String pingFrame = NostrClient.buildPingReqMessage(selfPubkey, JSON);
             @SuppressWarnings("unchecked")
