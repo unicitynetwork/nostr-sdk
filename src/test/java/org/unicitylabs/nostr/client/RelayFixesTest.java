@@ -127,6 +127,41 @@ public class RelayFixesTest {
     }
 
     @Test
+    public void closedFrameForUnknownSubIdDoesNotNotifyListener_dosGuard() throws Exception {
+        // A misbehaving or malicious relay can spam CLOSED frames for
+        // arbitrary sub_ids the client never subscribed to. We must
+        // NOT pass those through to listeners — and on the relay path
+        // (covered by e2e) we must not record them in closedSubIds
+        // either, since the set would otherwise grow unbounded.
+        NostrClient client = new NostrClient(NostrKeyManager.generate());
+
+        AtomicReference<String> errorMsg = new AtomicReference<>();
+        NostrEventListener listener = new NostrEventListener() {
+            @Override public void onEvent(org.unicitylabs.nostr.protocol.Event e) { }
+            @Override public void onError(String subId, String error) { errorMsg.set(error); }
+        };
+        // Register a real listener on a known sub so we can prove this
+        // path doesn't accidentally fire it.
+        client.subscribe("real-sub", Filter.builder().kinds(1).build(), listener);
+
+        invokeHandleRelayMessage(client, JSON.writeValueAsString(
+                java.util.Arrays.asList("CLOSED", "ghost-sub", "rejected")));
+
+        assertNull("Listener for a different sub must NOT be notified for ghost CLOSED",
+                errorMsg.get());
+    }
+
+    @Test
+    public void closedFrameWithNonStringSubIdIsIgnored() throws Exception {
+        NostrClient client = new NostrClient(NostrKeyManager.generate());
+        // Numeric sub_id — defensive: don't throw, don't notify.
+        invokeHandleRelayMessage(client, "[\"CLOSED\", 42, \"whatever\"]");
+        // Object sub_id.
+        invokeHandleRelayMessage(client, "[\"CLOSED\", {\"x\":1}, \"whatever\"]");
+        // Survival is the test.
+    }
+
+    @Test
     public void queryFutureSettlesPromptlyOnClosed() throws Exception {
         // Use a long timeout — if CLOSED handling is wrong, this test will
         // visibly hang for the full timeout instead of resolving in ms.
