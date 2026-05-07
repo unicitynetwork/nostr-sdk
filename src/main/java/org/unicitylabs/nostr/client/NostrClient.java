@@ -187,6 +187,29 @@ public class NostrClient {
     }
 
     /**
+     * Decide whether a relay's CLOSED reason describes a transient
+     * rejection (the relay will let us retry) vs. a terminal one (the
+     * relay won't accept this sub on this connection).
+     *
+     * <p>NIP-42: relays requiring AUTH reject pre-auth REQs with
+     * {@code "auth-required:..."} (or {@code "auth-required ..."})
+     * and immediately send an AUTH challenge. After we sign and the
+     * AUTH succeeds, {@link RelayConnection#resubscribeAfterAuth}
+     * re-issues the sub. If we treated this CLOSED as terminal
+     * (marking {@code closedSubIds}), the in-flight query would
+     * settle on the first CLOSED and {@code unsubscribe()} would
+     * evict the sub from the global Map — by the time
+     * {@code resubscribeAfterAuth} runs there would be nothing to
+     * retry, and the query is permanently lost.</p>
+     *
+     * <p>Package-visible for testing.</p>
+     */
+    static boolean isTransientCloseReason(String reason) {
+        if (reason == null) return false;
+        return reason.startsWith("auth-required:") || reason.startsWith("auth-required ");
+    }
+
+    /**
      * Get the current query timeout in milliseconds.
      *
      * @return Query timeout in milliseconds
@@ -1516,7 +1539,12 @@ public class NostrClient {
                 ? (String) json.get(2)
                 : "no reason provided";
 
-        if (relay != null) {
+        // NIP-42 transient case: relays that require AUTH typically
+        // reject pre-auth REQs with CLOSED("auth-required:...") and
+        // then send an AUTH challenge. resubscribeAfterAuth re-issues
+        // the sub, so this rejection is NOT terminal — see
+        // isTransientCloseReason() for details.
+        if (relay != null && !isTransientCloseReason(message)) {
             relay.closedSubIds.add(subscriptionId);
         }
 
