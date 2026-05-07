@@ -178,7 +178,8 @@ public class NostrClient {
      *
      * <p>Package-visible for testing.</p>
      */
-    static String buildPingReqMessage(String selfPubkey, ObjectMapper jsonMapper) throws Exception {
+    static String buildPingReqMessage(String selfPubkey, ObjectMapper jsonMapper)
+            throws com.fasterxml.jackson.core.JsonProcessingException {
         java.util.LinkedHashMap<String, Object> pingFilter = new java.util.LinkedHashMap<>();
         pingFilter.put("authors", java.util.Collections.singletonList(selfPubkey));
         pingFilter.put("limit", 1);
@@ -680,31 +681,36 @@ public class NostrClient {
         CompletableFuture<T> future = new CompletableFuture<>();
         String subscriptionId = "query-" + UUID.randomUUID().toString().substring(0, 8);
 
-        // Track per-author earliest seen and latest event
-        Map<String, long[]> authorFirstSeen = new ConcurrentHashMap<>(); // pubkey -> [firstSeen]
-        Map<String, Event> authorLatestEvent = new ConcurrentHashMap<>(); // pubkey -> latestEvent
+        // Track per-author state in a single map so firstSeen and
+        // latestEvent updates for the same pubkey are atomic. Two
+        // separate maps would let pickWinner observe a pubkey in
+        // firstSeen but not yet in latestEvent under multi-relay
+        // concurrent dispatch, returning null prematurely.
+        Map<String, AuthorState> authorState = new ConcurrentHashMap<>();
 
         // Pick winner from collected per-author state. Used by both
         // EOSE (clean stream end) and CLOSED (relay rejected the
         // subscription mid-stream) so the second case settles promptly
         // instead of waiting the full query timeout.
         java.util.function.Supplier<T> pickWinner = () -> {
-            if (authorFirstSeen.isEmpty()) {
+            if (authorState.isEmpty()) {
                 return null;
             }
             String winnerPubkey = null;
             long winnerFirstSeen = Long.MAX_VALUE;
-            for (Map.Entry<String, long[]> entry : authorFirstSeen.entrySet()) {
+            for (Map.Entry<String, AuthorState> entry : authorState.entrySet()) {
                 String pubkey = entry.getKey();
-                long firstSeen = entry.getValue()[0];
+                long firstSeen = entry.getValue().firstSeen;
                 if (firstSeen < winnerFirstSeen
                     || (firstSeen == winnerFirstSeen && (winnerPubkey == null || pubkey.compareTo(winnerPubkey) < 0))) {
                     winnerFirstSeen = firstSeen;
                     winnerPubkey = pubkey;
                 }
             }
-            Event winnerEvent = authorLatestEvent.get(winnerPubkey);
-            return winnerEvent != null ? extractResult.apply(winnerEvent) : null;
+            AuthorState winner = authorState.get(winnerPubkey);
+            return winner != null && winner.latestEvent != null
+                    ? extractResult.apply(winner.latestEvent)
+                    : null;
         };
 
         NostrEventListener listener = new NostrEventListener() {
@@ -719,17 +725,15 @@ public class NostrClient {
                 String pubkey = event.getPubkey();
                 long createdAt = event.getCreatedAt();
 
-                authorFirstSeen.compute(pubkey, (k, v) -> {
-                    if (v == null) return new long[]{createdAt};
-                    v[0] = Math.min(v[0], createdAt);
-                    return v;
-                });
-
-                authorLatestEvent.compute(pubkey, (k, existing) -> {
-                    if (existing == null || createdAt > existing.getCreatedAt()) {
-                        return event;
+                authorState.compute(pubkey, (k, prev) -> {
+                    if (prev == null) {
+                        return new AuthorState(createdAt, event);
                     }
-                    return existing;
+                    long firstSeen = Math.min(prev.firstSeen, createdAt);
+                    Event latest = createdAt > prev.latestEvent.getCreatedAt()
+                            ? event
+                            : prev.latestEvent;
+                    return new AuthorState(firstSeen, latest);
                 });
             }
 
@@ -828,9 +832,15 @@ public class NostrClient {
             String json = jsonMapper.writeValueAsString(closeMessage);
 
             for (RelayConnection connection : relayConnections.values()) {
-                if (connection.isConnected()) {
+                // Skip CLOSE on relays that already CLOSED the sub
+                // themselves — no point telling the relay something
+                // it told us. Drop the per-relay marker either way
+                // since the sub is gone from the global map.
+                if (connection.isConnected()
+                        && !connection.closedSubIds.contains(subscriptionId)) {
                     connection.send(json);
                 }
+                connection.closedSubIds.remove(subscriptionId);
             }
 
             logger.debug("Unsubscribed: {}", subscriptionId);
@@ -894,6 +904,14 @@ public class NostrClient {
         private volatile long lastPongTime = System.currentTimeMillis();
         private volatile int unansweredPings = 0;
         private ScheduledFuture<?> pingTimer = null;
+        // Sub_ids this specific relay has CLOSED for us. Used to skip
+        // them in sendAllSubscriptions / post-AUTH resubscribe so we
+        // don't loop on a rejected REQ. Per-relay (not global) because
+        // multi-relay clients may have the same sub_id alive on a
+        // healthy relay. Reset on every fresh socket since per-
+        // connection sub-slot accounting starts over.
+        private final java.util.Set<String> closedSubIds =
+                java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
         RelayConnection(String url, CompletableFuture<Void> connectFuture) {
             this.url = url;
@@ -1067,6 +1085,10 @@ public class NostrClient {
 
         private void sendAllSubscriptions(WebSocket webSocket) {
             for (Map.Entry<String, SubscriptionInfo> entry : subscriptions.entrySet()) {
+                // Skip subs this relay previously CLOSED — re-issuing
+                // them just triggers the same rejection in a loop.
+                // Other healthy relays still resubscribe.
+                if (closedSubIds.contains(entry.getKey())) continue;
                 sendSubscription(webSocket, entry.getKey(), entry.getValue().filter);
             }
         }
@@ -1083,7 +1105,10 @@ public class NostrClient {
                     handleAuthChallenge(webSocket, text);
                     return;
                 }
-                handleRelayMessage(text);
+                // Hand off via the relay-aware dispatcher so CLOSED
+                // frames can be attributed to this specific relay
+                // rather than treated as global.
+                handleRelayMessage(this, text);
             } catch (Exception e) {
                 logger.error("Error handling relay message", e);
             }
@@ -1231,7 +1256,17 @@ public class NostrClient {
         }
     }
 
+    /**
+     * Backward-compat dispatcher used by tests that don't have a real
+     * relay connection. Production callers go through
+     * {@link #handleRelayMessage(RelayConnection, String)} so CLOSED
+     * frames can be attributed to the originating relay.
+     */
     private void handleRelayMessage(String message) {
+        handleRelayMessage(null, message);
+    }
+
+    private void handleRelayMessage(RelayConnection relay, String message) {
         try {
             @SuppressWarnings("unchecked")
             List<Object> json = jsonMapper.readValue(message, List.class);
@@ -1252,7 +1287,7 @@ public class NostrClient {
                     handleNoticeMessage(json);
                     break;
                 case "CLOSED":
-                    handleClosedMessage(json);
+                    handleClosedMessage(relay, json);
                     break;
                 default:
                     logger.debug("Unknown message type: {}", messageType);
@@ -1308,25 +1343,38 @@ public class NostrClient {
     /**
      * Handle CLOSED message from relay (subscription terminated by relay).
      *
-     * NIP-01 CLOSED frames are terminal for the named subscription on the
-     * relay side. We must remove the entry from {@code subscriptions}
-     * immediately, otherwise:
-     * <ul>
-     *   <li>any reconnect-time resubscribe loop re-issues the REQ,
-     *       triggering the same rejection;</li>
-     *   <li>the entry leaks forever, and the caller silently waits for
-     *       events that will never arrive (typically misdiagnosed as
-     *       "no data found" after the query timeout fires).</li>
-     * </ul>
+     * NIP-01 CLOSED frames are terminal for the named subscription
+     * <em>on the sending relay</em>. In a multi-relay client the same
+     * sub_id may still be alive on a healthy relay, so we must NOT
+     * delete the global {@code subscriptions} entry here — that would
+     * silently drop EVENT/EOSE frames from the still-healthy relays
+     * in {@code handleEventMessage}.
+     *
+     * Instead we record the rejection on the sending relay's
+     * {@code closedSubIds} so {@code sendAllSubscriptions} skips it on
+     * this relay only. The listener is notified via {@code onError}
+     * so callers (e.g. {@code queryWithFirstSeenWins}) can decide to
+     * settle and explicitly call {@code unsubscribe()} if they want
+     * to give up across all relays.
+     *
+     * <p>The {@code relay} argument is nullable: callers without a
+     * concrete relay context (legacy tests) get listener notification
+     * only.</p>
+     *
+     * <p>Per NIP-01 the message field is optional. We accept any
+     * frame with at least the sub_id; missing reason becomes the
+     * literal {@code "no reason provided"}.</p>
      */
-    private void handleClosedMessage(List<Object> json) {
-        if (json.size() < 3) return;
+    private void handleClosedMessage(RelayConnection relay, List<Object> json) {
+        if (json.size() < 2) return;
         String subscriptionId = (String) json.get(1);
-        String message = (String) json.get(2);
+        String message = json.size() > 2 ? (String) json.get(2) : "no reason provided";
 
-        // Remove from local map BEFORE notifying so any listener-driven
-        // follow-up (e.g. retry) starts from a clean slate.
-        SubscriptionInfo subscription = subscriptions.remove(subscriptionId);
+        if (relay != null) {
+            relay.closedSubIds.add(subscriptionId);
+        }
+
+        SubscriptionInfo subscription = subscriptions.get(subscriptionId);
         if (subscription != null && subscription.listener != null) {
             subscription.listener.onError(subscriptionId, "Subscription closed: " + message);
         }
@@ -1350,6 +1398,23 @@ public class NostrClient {
         QueuedEvent(Event event, long timestamp) {
             this.event = event;
             this.timestamp = timestamp;
+        }
+    }
+
+    /**
+     * Per-author state collected during a queryWithFirstSeenWins run.
+     * Combining {@code firstSeen} and {@code latestEvent} into one
+     * immutable record makes updates atomic via
+     * {@code ConcurrentHashMap.compute}, so {@code pickWinner} cannot
+     * observe a pubkey with firstSeen set but latestEvent null.
+     */
+    private static class AuthorState {
+        final long firstSeen;
+        final Event latestEvent;
+
+        AuthorState(long firstSeen, Event latestEvent) {
+            this.firstSeen = firstSeen;
+            this.latestEvent = latestEvent;
         }
     }
 }
