@@ -31,11 +31,21 @@ import static org.junit.Assert.*;
  *
  * <p>Tests use reflection to drive private dispatch because the relevant
  * code paths fire from the WebSocket listener and the SDK does not expose
- * a fake-socket injection point. The legacy
- * {@code handleRelayMessage(String)} entry point is preserved for tests
- * (it dispatches with {@code relay = null}, which exercises the listener
- * notify path without per-relay closed-sub tracking — that side is
- * covered by the e2e test against a real connection).</p>
+ * a fake-socket injection point. Two reflection paths are used:</p>
+ * <ul>
+ *   <li><b>Legacy path</b> — {@code handleRelayMessage(String)} with
+ *       {@code relay = null}. Exercises listener notification, the global
+ *       {@code subscriptions} map, and the static
+ *       {@link NostrClient#isTransientCloseReason} decision logic, but
+ *       does NOT populate per-relay {@code closedSubIds} /
+ *       {@code eosedSubIds}.</li>
+ *   <li><b>Relay-aware path</b> — construct a {@code RelayConnection}
+ *       inner-class instance via reflection, mark it connected, then
+ *       invoke {@code handleRelayMessage(RelayConnection, String)}.
+ *       Exercises the per-relay bookkeeping that production code drives
+ *       from the OkHttp WebSocket listener. See
+ *       {@link #closedFrameOnRealRelayPopulatesPerRelayClosedSubIds}.</li>
+ * </ul>
  */
 public class RelayFixesTest {
 
@@ -149,6 +159,96 @@ public class RelayFixesTest {
 
         assertNull("Listener for a different sub must NOT be notified for ghost CLOSED",
                 errorMsg.get());
+    }
+
+    @Test
+    public void closedFrameOnRealRelayPopulatesPerRelayClosedSubIds() throws Exception {
+        // Copilot: the existing tests drive the legacy
+        // handleRelayMessage(String) path with relay=null, which
+        // does NOT populate per-relay closedSubIds. Cover that
+        // specific bookkeeping by constructing a real RelayConnection
+        // via reflection and invoking the relay-aware dispatcher.
+        NostrClient client = new NostrClient(NostrKeyManager.generate());
+
+        // Construct a RelayConnection (non-static inner class — pass
+        // the outer NostrClient instance to its constructor).
+        Class<?> rcClass = Class.forName("org.unicitylabs.nostr.client.NostrClient$RelayConnection");
+        java.lang.reflect.Constructor<?> ctor = rcClass.getDeclaredConstructor(
+                NostrClient.class, String.class, java.util.concurrent.CompletableFuture.class);
+        ctor.setAccessible(true);
+        Object relay = ctor.newInstance(client, "ws://test", new java.util.concurrent.CompletableFuture<>());
+
+        // Mark the relay connected (simulates post-onOpen state).
+        java.lang.reflect.Field connectedField = rcClass.getDeclaredField("connected");
+        connectedField.setAccessible(true);
+        connectedField.setBoolean(relay, true);
+
+        // Register a sub.
+        Filter filter = Filter.builder().kinds(1).build();
+        client.subscribe("real-path-sub", filter, new NostrEventListener() {
+            @Override public void onEvent(org.unicitylabs.nostr.protocol.Event e) { }
+        });
+
+        // Drive the relay-aware dispatcher directly.
+        java.lang.reflect.Method dispatch = NostrClient.class.getDeclaredMethod(
+                "handleRelayMessage", rcClass, String.class);
+        dispatch.setAccessible(true);
+
+        // Terminal CLOSED reason → MUST land in this relay's closedSubIds.
+        dispatch.invoke(client, relay, JSON.writeValueAsString(
+                java.util.Arrays.asList("CLOSED", "real-path-sub", "rate-limited: too many")));
+
+        java.lang.reflect.Field closedSubIdsField = rcClass.getDeclaredField("closedSubIds");
+        closedSubIdsField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> closed = (java.util.Set<String>) closedSubIdsField.get(relay);
+        assertTrue("Terminal CLOSED must populate this relay's closedSubIds",
+                closed.contains("real-path-sub"));
+
+        // Auth-required CLOSED on a different sub → MUST NOT land
+        // in closedSubIds (NIP-42 transient).
+        client.subscribe("auth-sub", filter, new NostrEventListener() {
+            @Override public void onEvent(org.unicitylabs.nostr.protocol.Event e) { }
+        });
+        dispatch.invoke(client, relay, JSON.writeValueAsString(
+                java.util.Arrays.asList("CLOSED", "auth-sub", "auth-required: please")));
+        assertFalse("auth-required CLOSED must NOT populate closedSubIds (transient)",
+                closed.contains("auth-sub"));
+    }
+
+    @Test
+    public void eosedFrameOnRealRelayPopulatesPerRelayEosedSubIds() throws Exception {
+        // Sibling of the closedSubIds test: verify EOSE bookkeeping
+        // through the relay-aware path.
+        NostrClient client = new NostrClient(NostrKeyManager.generate());
+
+        Class<?> rcClass = Class.forName("org.unicitylabs.nostr.client.NostrClient$RelayConnection");
+        java.lang.reflect.Constructor<?> ctor = rcClass.getDeclaredConstructor(
+                NostrClient.class, String.class, java.util.concurrent.CompletableFuture.class);
+        ctor.setAccessible(true);
+        Object relay = ctor.newInstance(client, "ws://test", new java.util.concurrent.CompletableFuture<>());
+
+        java.lang.reflect.Field connectedField = rcClass.getDeclaredField("connected");
+        connectedField.setAccessible(true);
+        connectedField.setBoolean(relay, true);
+
+        client.subscribe("eose-sub", Filter.builder().kinds(1).build(), new NostrEventListener() {
+            @Override public void onEvent(org.unicitylabs.nostr.protocol.Event e) { }
+        });
+
+        java.lang.reflect.Method dispatch = NostrClient.class.getDeclaredMethod(
+                "handleRelayMessage", rcClass, String.class);
+        dispatch.setAccessible(true);
+
+        dispatch.invoke(client, relay, JSON.writeValueAsString(
+                java.util.Arrays.asList("EOSE", "eose-sub")));
+
+        java.lang.reflect.Field eosedField = rcClass.getDeclaredField("eosedSubIds");
+        eosedField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Set<String> eosed = (java.util.Set<String>) eosedField.get(relay);
+        assertTrue("EOSE must populate this relay's eosedSubIds",
+                eosed.contains("eose-sub"));
     }
 
     @Test

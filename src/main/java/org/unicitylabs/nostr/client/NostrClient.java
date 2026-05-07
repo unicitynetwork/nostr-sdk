@@ -995,8 +995,16 @@ public class NostrClient {
         private final String url;
         private CompletableFuture<Void> connectFuture;
         private WebSocket webSocket;
-        private boolean connected = false;
-        private boolean wasConnected = false;
+        // `connected` is written from the OkHttp WebSocket listener
+        // thread (onOpen / onClosed / onFailure) and from the
+        // executor thread that runs disconnect()/scheduleReconnect();
+        // it's read from listener threads via allRelaysDoneFor for
+        // multi-relay query settlement. Without `volatile` a stale
+        // "connected = true" read after disconnect could prevent
+        // prompt query settlement on the very disconnect path the
+        // settlement logic is supposed to handle.
+        private volatile boolean connected = false;
+        private volatile boolean wasConnected = false;
         private int reconnectAttempts = 0;
         private volatile long lastPongTime = System.currentTimeMillis();
         private volatile int unansweredPings = 0;
@@ -1327,6 +1335,30 @@ public class NostrClient {
             // Emit disconnect event if we were connected
             if (wasConnectedBefore) {
                 emitConnectionEvent("disconnect", url, reason);
+
+                // Re-trigger the all-done check on every active sub.
+                // queryWithFirstSeenWins.allRelaysDoneFor only runs
+                // from listener callbacks (EOSE / CLOSED via onError);
+                // a socket that drops without sending either would
+                // otherwise leave the query hanging until queryTimeoutMs
+                // even though the disconnected relay no longer counts
+                // toward "still pending" relays. Firing a synthetic
+                // onError gives every active sub a chance to
+                // re-evaluate now that the relay set has shrunk.
+                final String disconnectReason = reason;
+                java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
+                        new java.util.ArrayList<>(subscriptions.entrySet());
+                for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
+                    try {
+                        if (entry.getValue().listener != null) {
+                            entry.getValue().listener.onError(
+                                    entry.getKey(),
+                                    "Relay disconnected: " + disconnectReason);
+                        }
+                    } catch (Exception ignore) {
+                        // Best-effort notification.
+                    }
+                }
             }
 
             if (connectFuture != null && !connectFuture.isDone()) {
@@ -1375,12 +1407,36 @@ public class NostrClient {
 
         @Override
         public void onClosed(WebSocket webSocket, int code, String reason) {
+            boolean wasConnectedBefore = connected;
             connected = false;
             stopPingTimer();
             logger.info("Relay closed: {} - {} (code: {})", url, reason, code);
 
+            String safeReason = reason != null && !reason.isEmpty() ? reason : "Connection closed";
+
             // Emit disconnect event
-            emitConnectionEvent("disconnect", url, reason != null ? reason : "Connection closed");
+            emitConnectionEvent("disconnect", url, safeReason);
+
+            // Same as onFailure: synthetically notify in-flight subs
+            // so multi-relay queryWithFirstSeenWins re-checks
+            // allRelaysDoneFor and settles promptly when this relay
+            // is no longer counted as connected. Without this the
+            // query would hang until queryTimeoutMs.
+            if (wasConnectedBefore) {
+                java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
+                        new java.util.ArrayList<>(subscriptions.entrySet());
+                for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
+                    try {
+                        if (entry.getValue().listener != null) {
+                            entry.getValue().listener.onError(
+                                    entry.getKey(),
+                                    "Relay disconnected: " + safeReason);
+                        }
+                    } catch (Exception ignore) {
+                        // Best-effort notification.
+                    }
+                }
+            }
 
             // Schedule reconnect with exponential backoff if still running
             scheduleReconnect();
