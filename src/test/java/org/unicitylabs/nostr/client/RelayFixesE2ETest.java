@@ -29,8 +29,13 @@ import static org.junit.Assert.*;
  * <ol>
  *   <li>The keepalive "ping" REQ filter is scoped to {@code authors:[self]}
  *       (not the global {@code {"limit":1}} live tail).</li>
- *   <li>A CLOSED frame from the relay removes the subscription from the
- *       client-local {@code subscriptions} map.</li>
+ *   <li>A CLOSED frame from the relay surfaces to the listener via
+ *       {@code onError} and is recorded on the sending relay's
+ *       {@code closedSubIds} so {@code sendAllSubscriptions} skips it on
+ *       reconnect / post-AUTH. The global {@code subscriptions} map is
+ *       intentionally left intact (multi-relay clients may still have
+ *       the same sub alive on a healthy relay); listener-driven
+ *       {@code unsubscribe()} is what cleans it up across all relays.</li>
  *   <li>{@code queryWithFirstSeenWins} settles promptly on a CLOSED frame
  *       instead of waiting the full {@code queryTimeoutMs}.</li>
  * </ol>

@@ -747,14 +747,19 @@ public class NostrClient {
             @Override
             public void onError(String subId, String error) {
                 // CLOSED frame from the relay (rate-limit, auth-required,
-                // etc.) is terminal for this subscription. Settle promptly
-                // with whatever we collected so far instead of waiting for
-                // the timeout. Without this a relay-side rejection looks
-                // identical to "no data exists".
+                // etc.) is terminal for this subscription on the sending
+                // relay. Settle the future promptly with whatever we
+                // collected so far instead of waiting for the timeout —
+                // otherwise a relay-side rejection looks identical to
+                // "no data exists".
                 if (future.isDone()) return;
                 logger.warn("Relay closed subscription {}: {}", subId, error);
-                // handleClosedMessage already removed the entry, but call
-                // unsubscribe defensively in case of multi-relay setups.
+                // handleClosedMessage only records the rejection on the
+                // sending relay's closedSubIds (the global subscriptions
+                // map is intentionally left intact so other healthy
+                // relays' EVENT/EOSE frames can still be dispatched).
+                // Calling unsubscribe here removes the global entry and
+                // tells any remaining relays we're done.
                 unsubscribe(subscriptionId);
                 future.complete(pickWinner.get());
             }
@@ -908,8 +913,10 @@ public class NostrClient {
         // them in sendAllSubscriptions / post-AUTH resubscribe so we
         // don't loop on a rejected REQ. Per-relay (not global) because
         // multi-relay clients may have the same sub_id alive on a
-        // healthy relay. Reset on every fresh socket since per-
-        // connection sub-slot accounting starts over.
+        // healthy relay. Cleared explicitly in onOpen() (this class
+        // reuses the same instance across reconnects) and in
+        // resubscribeAfterAuth() so previously-rejected pre-auth REQs
+        // get re-issued post-AUTH.
         private final java.util.Set<String> closedSubIds =
                 java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
@@ -1045,6 +1052,14 @@ public class NostrClient {
             resetReconnectAttempts();
             lastPongTime = System.currentTimeMillis();
             unansweredPings = 0;
+            // Per-connection sub-slot accounting starts over on a
+            // fresh socket. Unlike the TS client (which constructs a
+            // new RelayConnection per connect), this Java class
+            // reuses the same instance across reconnects, so we must
+            // explicitly clear closedSubIds here — otherwise a sub
+            // rejected once stays permanently suppressed for the
+            // life of this RelayConnection.
+            closedSubIds.clear();
 
             // Start application-level ping health check
             startPingTimer();
