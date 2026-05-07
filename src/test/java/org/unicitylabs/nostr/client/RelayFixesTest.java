@@ -152,6 +152,55 @@ public class RelayFixesTest {
     }
 
     @Test
+    public void disconnectSettlesInflightQueriesImmediately() throws Exception {
+        // Self-audit invariant: calling disconnect() while a query is
+        // in-flight must notify its listener so the future settles
+        // promptly, not after the full queryTimeoutMs.
+        NostrClient client = new NostrClient(NostrKeyManager.generate());
+        client.setQueryTimeoutMs(60_000);
+
+        java.util.concurrent.CompletableFuture<String> future =
+                client.queryPubkeyByNametag("alice");
+        assertFalse("Query future should be pending before disconnect",
+                future.isDone());
+
+        long start = System.currentTimeMillis();
+        client.disconnect();
+        // Without the fix, the future would hang for the full 60s
+        // queryTimeoutMs. With the fix, listener.onError fires
+        // synchronously inside disconnect → future settles now.
+        String result = future.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertNull("Result must be null when disconnected mid-query", result);
+        assertTrue("Future settled in " + elapsed + "ms (expected < 1000ms)",
+                elapsed < 1_000);
+    }
+
+    @Test
+    public void eventFrameWithNonStringSubIdIsIgnored() throws Exception {
+        // Defensive: parity with the CLOSED/EOSE non-string guards.
+        // A relay sending ["EVENT", 42, ...] must not throw or
+        // notify any listener.
+        NostrClient client = new NostrClient(NostrKeyManager.generate());
+
+        AtomicReference<org.unicitylabs.nostr.protocol.Event> received =
+                new AtomicReference<>();
+        NostrEventListener listener = new NostrEventListener() {
+            @Override public void onEvent(org.unicitylabs.nostr.protocol.Event e) { received.set(e); }
+        };
+        client.subscribe("real-sub", Filter.builder().kinds(1).build(), listener);
+
+        // Numeric sub_id — must NOT throw, must NOT fire listener.
+        invokeHandleRelayMessage(client, "[\"EVENT\", 42, {\"id\":\"x\"}]");
+        // Object sub_id.
+        invokeHandleRelayMessage(client, "[\"EVENT\", {\"x\":1}, {\"id\":\"y\"}]");
+
+        assertNull("Listener for a different sub must NOT receive a malformed EVENT",
+                received.get());
+    }
+
+    @Test
     public void closedFrameWithNonStringSubIdIsIgnored() throws Exception {
         NostrClient client = new NostrClient(NostrKeyManager.generate());
         // Numeric sub_id — defensive: don't throw, don't notify.

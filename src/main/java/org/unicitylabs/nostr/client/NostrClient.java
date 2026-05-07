@@ -254,9 +254,35 @@ public class NostrClient {
         logger.info("Disconnecting from all relays");
         isRunning = false;
 
+        // Mark every relay disconnected synchronously BEFORE we
+        // notify subscriptions below, so any listener that consults
+        // allRelaysDoneFor sees zero connected relays and settles
+        // immediately. Without this, queryWithFirstSeenWins futures
+        // hung until queryTimeoutMs after the user explicitly tore
+        // down the client.
         for (RelayConnection connection : relayConnections.values()) {
             connection.close();
         }
+
+        // Notify in-flight subscriptions that we're shutting down.
+        // Listener-driven settlement (queryWithFirstSeenWins.onError)
+        // re-checks allRelaysDoneFor; since we just closed every
+        // relay it's trivially true and the future resolves now.
+        // Snapshot keys first because the listener may call
+        // unsubscribe(), which mutates `subscriptions` while we
+        // iterate.
+        java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
+                new java.util.ArrayList<>(subscriptions.entrySet());
+        for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
+            try {
+                if (entry.getValue().listener != null) {
+                    entry.getValue().listener.onError(entry.getKey(), "Client disconnected");
+                }
+            } catch (Exception e) {
+                // Ignore listener errors — we're tearing down anyway.
+            }
+        }
+
         relayConnections.clear();
 
         if (reconnectExecutor != null) {
@@ -1234,13 +1260,18 @@ public class NostrClient {
         private void resubscribeAfterAuth(WebSocket webSocket) {
             // Some relays respond to pre-auth REQs with
             // ["CLOSED","<sub>","auth-required:..."], which lands in
-            // closedSubIds. Now that we've responded to the AUTH
-            // challenge, those subs are eligible for retry. Clear the
-            // marker so sendAllSubscriptions re-issues them.
-            // Permanent rejections (max_subscriptions, etc.) just get
+            // closedSubIds. Others EOSE the pre-auth sub with 0
+            // events because the filter was unsatisfiable without
+            // auth context — that lands in eosedSubIds. Either way,
+            // post-auth those subs are eligible for retry and the
+            // local "still waiting" state must be re-armed for any
+            // in-flight queryWithFirstSeenWins. Clear BOTH markers
+            // before sendAllSubscriptions re-issues them. Permanent
+            // rejections (max_subscriptions, etc.) just get
             // re-rejected and re-recorded — harmless. Auth-required
-            // ones now succeed.
+            // and stale-EOSE ones now succeed.
             closedSubIds.clear();
+            eosedSubIds.clear();
             logger.debug("Re-subscribing after auth");
             sendAllSubscriptions(webSocket);
         }
@@ -1375,17 +1406,21 @@ public class NostrClient {
     }
 
     private void handleEventMessage(List<Object> json) {
+        // Defensive parity with handleClosedMessage / handleEOSEMessage:
+        // a misbehaving relay sending ["EVENT", 42, ...] would otherwise
+        // throw ClassCastException on (String) json.get(1) — caught
+        // below, but louder and slower than an early-return.
+        if (json.size() < 3 || !(json.get(1) instanceof String)) return;
+        String subscriptionId = (String) json.get(1);
+
+        SubscriptionInfo subscription = subscriptions.get(subscriptionId);
+        if (subscription == null || subscription.listener == null) return;
+
         try {
-            String subscriptionId = (String) json.get(1);
             @SuppressWarnings("unchecked")
             Map<String, Object> eventData = (Map<String, Object>) json.get(2);
-
             Event event = jsonMapper.convertValue(eventData, Event.class);
-
-            SubscriptionInfo subscription = subscriptions.get(subscriptionId);
-            if (subscription != null && subscription.listener != null) {
-                subscription.listener.onEvent(event);
-            }
+            subscription.listener.onEvent(event);
         } catch (Exception e) {
             logger.error("Error handling EVENT message", e);
         }
