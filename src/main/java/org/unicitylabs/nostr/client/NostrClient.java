@@ -35,6 +35,17 @@ public class NostrClient {
     private static final int DEFAULT_MAX_RECONNECT_INTERVAL_MS = 30000;
     private static final int DEFAULT_PING_INTERVAL_MS = 30000;
 
+    /**
+     * Internal sub_id reserved for the keepalive REQ. Namespaced
+     * with a {@code __nostr-sdk-} prefix so that user code calling
+     * {@link #subscribe(String, Filter, NostrEventListener)} with an
+     * explicit subscription id cannot collide — a user choosing the
+     * literal {@code "ping"} would otherwise have their subscription
+     * forcibly CLOSE/REQ'd every ping interval. The leading
+     * {@code __} is a stable convention for "do not pick this name."
+     */
+    static final String PING_SUB_ID = "__nostr-sdk-keepalive__";
+
     private final NostrKeyManager keyManager;
     private final OkHttpClient httpClient;
     private final ObjectMapper jsonMapper;
@@ -183,7 +194,7 @@ public class NostrClient {
         java.util.LinkedHashMap<String, Object> pingFilter = new java.util.LinkedHashMap<>();
         pingFilter.put("authors", java.util.Collections.singletonList(selfPubkey));
         pingFilter.put("limit", 1);
-        return jsonMapper.writeValueAsString(java.util.Arrays.asList("REQ", "ping", pingFilter));
+        return jsonMapper.writeValueAsString(java.util.Arrays.asList("REQ", PING_SUB_ID, pingFilter));
     }
 
     /**
@@ -1133,7 +1144,7 @@ public class NostrClient {
                 // braces liveness probe and to give the relay a no-op
                 // workload that's easy to reason about.
                 try {
-                    String closeMessage = jsonMapper.writeValueAsString(Arrays.asList("CLOSE", "ping"));
+                    String closeMessage = jsonMapper.writeValueAsString(Arrays.asList("CLOSE", PING_SUB_ID));
                     webSocket.send(closeMessage);
                     String pingMessage = buildPingReqMessage(keyManager.getPublicKeyHex(), jsonMapper);
                     webSocket.send(pingMessage);

@@ -61,7 +61,7 @@ public class RelayFixesTest {
         List<Object> parsed = JSON.readValue(pingFrame, List.class);
 
         assertEquals("REQ", parsed.get(0));
-        assertEquals("ping", parsed.get(1));
+        assertEquals(NostrClient.PING_SUB_ID, parsed.get(1));
 
         @SuppressWarnings("unchecked")
         Map<String, Object> filter = (Map<String, Object>) parsed.get(2);
