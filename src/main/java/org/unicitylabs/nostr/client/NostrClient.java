@@ -1164,6 +1164,15 @@ public class NostrClient {
         }
 
         private void resubscribeAfterAuth(WebSocket webSocket) {
+            // Some relays respond to pre-auth REQs with
+            // ["CLOSED","<sub>","auth-required:..."], which lands in
+            // closedSubIds. Now that we've responded to the AUTH
+            // challenge, those subs are eligible for retry. Clear the
+            // marker so sendAllSubscriptions re-issues them.
+            // Permanent rejections (max_subscriptions, etc.) just get
+            // re-rejected and re-recorded — harmless. Auth-required
+            // ones now succeed.
+            closedSubIds.clear();
             logger.debug("Re-subscribing after auth");
             sendAllSubscriptions(webSocket);
         }
