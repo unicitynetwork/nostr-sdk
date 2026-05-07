@@ -110,8 +110,7 @@ public class RelayFixesE2ETest {
             // The most direct assertion in Java is via the static helper —
             // it produces the exact frame the timer sends. Verifying that
             // shape here also guards against future drift in the timer.
-            String selfPubkey = readPrivate(client, "keyManager", NostrKeyManager.class)
-                    .getPublicKeyHex();
+            String selfPubkey = client.getKeyManager().getPublicKeyHex();
             String pingFrame = NostrClient.buildPingReqMessage(selfPubkey, JSON);
             @SuppressWarnings("unchecked")
             List<Object> parsed = JSON.readValue(pingFrame, List.class);
@@ -135,13 +134,22 @@ public class RelayFixesE2ETest {
     }
 
     @Test
-    public void closedFrameRemovesSubscriptionFromMapOnLiveRelay() throws Exception {
+    public void closedFrameNotifiesListenerOnLiveRelay() throws Exception {
         // Verifies CLOSED-handling end-to-end against a real relay
-        // connection. We register a subscription with a deterministic
-        // sub_id and inject the same CLOSED frame nostr-rs-relay emits
-        // under max_subscriptions exhaustion. The sub MUST disappear
-        // from the local map (otherwise reconnect-resubscribe loops
-        // forever).
+        // connection. We register a subscription, simulate the relay
+        // sending a CLOSED frame, and assert two things:
+        //
+        //   1. The listener is notified via onError — without this,
+        //      callers cannot distinguish rate-limiting from "no data
+        //      exists" and silently wait for queryTimeoutMs.
+        //
+        //   2. A subsequent listener-driven unsubscribe() cleans the
+        //      global subscriptions map. (We deliberately do NOT
+        //      assert that handleClosedMessage itself removes from the
+        //      global map, because in a multi-relay client the sub
+        //      may still be alive on a healthy relay — per-relay
+        //      tracking is what stops the rejection loop on the
+        //      sending relay.)
         NostrClient client = new NostrClient(NostrKeyManager.generate());
         try {
             client.connect(RELAY_URL).get(15, TimeUnit.SECONDS);
@@ -164,13 +172,16 @@ public class RelayFixesE2ETest {
                             subId,
                             "error: Maximum concurrent subscription count reached")));
 
-            subs = readPrivateMap(client, "subscriptions");
-            assertFalse("Sub MUST be removed after CLOSED — otherwise "
-                    + "reconnect-resubscribe re-issues the rejected REQ "
-                    + "and loops forever.", subs.containsKey(subId));
-
             assertNotNull("Listener must be notified of the CLOSED reason", errorMsg.get());
             assertTrue(errorMsg.get().contains("Maximum concurrent subscription count reached"));
+
+            // The listener (in production, queryWithFirstSeenWins.onError)
+            // would call unsubscribe() to give up across all relays; that's
+            // when the global map is cleaned.
+            client.unsubscribe(subId);
+            subs = readPrivateMap(client, "subscriptions");
+            assertFalse("Listener-driven unsubscribe must clean the global map",
+                    subs.containsKey(subId));
         } finally {
             client.disconnect();
         }
@@ -239,12 +250,6 @@ public class RelayFixesE2ETest {
         Field f = NostrClient.class.getDeclaredField(fieldName);
         f.setAccessible(true);
         return (Map<String, ?>) f.get(client);
-    }
-
-    private static <T> T readPrivate(NostrClient client, String fieldName, Class<T> type) throws Exception {
-        Field f = NostrClient.class.getDeclaredField(fieldName);
-        f.setAccessible(true);
-        return type.cast(f.get(client));
     }
 
     private static void invokeHandleRelayMessage(NostrClient client, String message) throws Exception {
