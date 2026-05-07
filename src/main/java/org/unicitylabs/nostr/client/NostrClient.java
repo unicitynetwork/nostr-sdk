@@ -746,22 +746,27 @@ public class NostrClient {
 
             @Override
             public void onError(String subId, String error) {
-                // CLOSED frame from the relay (rate-limit, auth-required,
-                // etc.) is terminal for this subscription on the sending
-                // relay. Settle the future promptly with whatever we
-                // collected so far instead of waiting for the timeout —
-                // otherwise a relay-side rejection looks identical to
-                // "no data exists".
+                // CLOSED frame from the relay is terminal for this sub
+                // *on the sending relay*. In a multi-relay client the
+                // same sub_id may still be alive on a healthy relay,
+                // so we must NOT settle on the first CLOSED — that
+                // would prematurely abort a query other relays could
+                // satisfy. Settle only when ALL connected relays have
+                // closed this sub. handleClosedMessage records the
+                // rejection on the sending relay's closedSubIds before
+                // invoking us, so we can decide by inspecting that
+                // state across all connected relays.
                 if (future.isDone()) return;
                 logger.warn("Relay closed subscription {}: {}", subId, error);
-                // handleClosedMessage only records the rejection on the
-                // sending relay's closedSubIds (the global subscriptions
-                // map is intentionally left intact so other healthy
-                // relays' EVENT/EOSE frames can still be dispatched).
-                // Calling unsubscribe here removes the global entry and
-                // tells any remaining relays we're done.
-                unsubscribe(subscriptionId);
-                future.complete(pickWinner.get());
+                boolean allClosed = relayConnections.values().stream()
+                        .filter(RelayConnection::isConnected)
+                        .allMatch(rc -> rc.closedSubIds.contains(subscriptionId));
+                if (allClosed) {
+                    unsubscribe(subscriptionId);
+                    future.complete(pickWinner.get());
+                }
+                // else: keep waiting for EOSE from a healthy relay or
+                // the overall query timeout.
             }
         };
 
@@ -1391,16 +1396,32 @@ public class NostrClient {
      */
     private void handleClosedMessage(RelayConnection relay, List<Object> json) {
         if (json.size() < 2) return;
-        String subscriptionId = (String) json.get(1);
-        String message = json.size() > 2 ? (String) json.get(2) : "no reason provided";
+        Object rawSubId = json.get(1);
+        if (!(rawSubId instanceof String)) return;
+        String subscriptionId = (String) rawSubId;
+
+        // Ignore CLOSED for sub_ids we don't know about. A misbehaving
+        // or malicious relay could otherwise spam us with arbitrary
+        // sub_ids and grow `closedSubIds` unbounded over a long-lived
+        // connection, and could pre-emptively block sub_ids we might
+        // use later.
+        SubscriptionInfo subscription = subscriptions.get(subscriptionId);
+        if (subscription == null) return;
+
+        String message = json.size() > 2 && json.get(2) instanceof String
+                ? (String) json.get(2)
+                : "no reason provided";
 
         if (relay != null) {
             relay.closedSubIds.add(subscriptionId);
         }
 
-        SubscriptionInfo subscription = subscriptions.get(subscriptionId);
-        if (subscription != null && subscription.listener != null) {
-            subscription.listener.onError(subscriptionId, "Subscription closed: " + message);
+        if (subscription.listener != null) {
+            // Pass the relay's reason through verbatim so callers can
+            // pattern-match on standard prefixes (`auth-required:`,
+            // `rate-limited:`, `blocked:`, etc.) without parsing
+            // through a wrapper string.
+            subscription.listener.onError(subscriptionId, message);
         }
         logger.debug("CLOSED for subscription {}: {}", subscriptionId, message);
     }
