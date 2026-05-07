@@ -308,20 +308,7 @@ public class NostrClient {
         // Listener-driven settlement (queryWithFirstSeenWins.onError)
         // re-checks allRelaysDoneFor; since we just closed every
         // relay it's trivially true and the future resolves now.
-        // Snapshot keys first because the listener may call
-        // unsubscribe(), which mutates `subscriptions` while we
-        // iterate.
-        java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
-                new java.util.ArrayList<>(subscriptions.entrySet());
-        for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
-            try {
-                if (entry.getValue().listener != null) {
-                    entry.getValue().listener.onError(entry.getKey(), "Client disconnected");
-                }
-            } catch (Exception e) {
-                // Ignore listener errors — we're tearing down anyway.
-            }
-        }
+        notifyAllSubscriptionsError("Client disconnected");
 
         relayConnections.clear();
 
@@ -866,6 +853,34 @@ public class NostrClient {
     }
 
     /**
+     * Best-effort notify every active subscription's listener of a
+     * teardown event (relay disconnect, client disconnect). Snapshots
+     * the entry set first because listeners may call
+     * {@code unsubscribe()} which mutates {@code subscriptions} while
+     * we iterate. Listener exceptions are swallowed — we're tearing
+     * down regardless.
+     *
+     * <p>Used by {@link #disconnect()},
+     * {@code RelayConnection.onClosed}, and
+     * {@code RelayConnection.onFailure} so the three teardown paths
+     * stay consistent (snapshot strategy, error message format,
+     * exception handling).</p>
+     */
+    private void notifyAllSubscriptionsError(String reason) {
+        java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
+                new java.util.ArrayList<>(subscriptions.entrySet());
+        for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
+            try {
+                if (entry.getValue().listener != null) {
+                    entry.getValue().listener.onError(entry.getKey(), reason);
+                }
+            } catch (Exception ignore) {
+                // Best-effort notification.
+            }
+        }
+    }
+
+    /**
      * True if every currently-connected relay has finished delivering
      * for the given sub_id (either EOSE'd or CLOSED'd it). Used by
      * queryWithFirstSeenWins to coordinate multi-relay settlement.
@@ -1377,20 +1392,7 @@ public class NostrClient {
                 // toward "still pending" relays. Firing a synthetic
                 // onError gives every active sub a chance to
                 // re-evaluate now that the relay set has shrunk.
-                final String disconnectReason = reason;
-                java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
-                        new java.util.ArrayList<>(subscriptions.entrySet());
-                for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
-                    try {
-                        if (entry.getValue().listener != null) {
-                            entry.getValue().listener.onError(
-                                    entry.getKey(),
-                                    "Relay disconnected: " + disconnectReason);
-                        }
-                    } catch (Exception ignore) {
-                        // Best-effort notification.
-                    }
-                }
+                notifyAllSubscriptionsError("Relay disconnected: " + reason);
             }
 
             if (connectFuture != null && !connectFuture.isDone()) {
@@ -1455,19 +1457,7 @@ public class NostrClient {
             // is no longer counted as connected. Without this the
             // query would hang until queryTimeoutMs.
             if (wasConnectedBefore) {
-                java.util.List<Map.Entry<String, SubscriptionInfo>> inflight =
-                        new java.util.ArrayList<>(subscriptions.entrySet());
-                for (Map.Entry<String, SubscriptionInfo> entry : inflight) {
-                    try {
-                        if (entry.getValue().listener != null) {
-                            entry.getValue().listener.onError(
-                                    entry.getKey(),
-                                    "Relay disconnected: " + safeReason);
-                        }
-                    } catch (Exception ignore) {
-                        // Best-effort notification.
-                    }
-                }
+                notifyAllSubscriptionsError("Relay disconnected: " + safeReason);
             }
 
             // Schedule reconnect with exponential backoff if still running
