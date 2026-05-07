@@ -166,6 +166,26 @@ public class NostrClient {
     }
 
     /**
+     * Build the keepalive REQ message ("ping") used by the per-relay
+     * health-check timer.
+     *
+     * <p>The filter is intentionally scoped to {@code authors:[selfPubkey]}.
+     * An open {@code {"limit":1}} filter (with no kinds/authors/#p) would,
+     * after EOSE, stream every event the relay receives back through this
+     * subscription via NIP-01's live tail — saturating the connection and
+     * exhausting per-connection subscription slots on busy relays.
+     * Scoping by the local pubkey keeps the live tail empty in practice.</p>
+     *
+     * <p>Package-visible for testing.</p>
+     */
+    static String buildPingReqMessage(String selfPubkey, ObjectMapper jsonMapper) throws Exception {
+        java.util.LinkedHashMap<String, Object> pingFilter = new java.util.LinkedHashMap<>();
+        pingFilter.put("authors", java.util.Collections.singletonList(selfPubkey));
+        pingFilter.put("limit", 1);
+        return jsonMapper.writeValueAsString(java.util.Arrays.asList("REQ", "ping", pingFilter));
+    }
+
+    /**
      * Get the current query timeout in milliseconds.
      *
      * @return Query timeout in milliseconds
@@ -664,6 +684,29 @@ public class NostrClient {
         Map<String, long[]> authorFirstSeen = new ConcurrentHashMap<>(); // pubkey -> [firstSeen]
         Map<String, Event> authorLatestEvent = new ConcurrentHashMap<>(); // pubkey -> latestEvent
 
+        // Pick winner from collected per-author state. Used by both
+        // EOSE (clean stream end) and CLOSED (relay rejected the
+        // subscription mid-stream) so the second case settles promptly
+        // instead of waiting the full query timeout.
+        java.util.function.Supplier<T> pickWinner = () -> {
+            if (authorFirstSeen.isEmpty()) {
+                return null;
+            }
+            String winnerPubkey = null;
+            long winnerFirstSeen = Long.MAX_VALUE;
+            for (Map.Entry<String, long[]> entry : authorFirstSeen.entrySet()) {
+                String pubkey = entry.getKey();
+                long firstSeen = entry.getValue()[0];
+                if (firstSeen < winnerFirstSeen
+                    || (firstSeen == winnerFirstSeen && (winnerPubkey == null || pubkey.compareTo(winnerPubkey) < 0))) {
+                    winnerFirstSeen = firstSeen;
+                    winnerPubkey = pubkey;
+                }
+            }
+            Event winnerEvent = authorLatestEvent.get(winnerPubkey);
+            return winnerEvent != null ? extractResult.apply(winnerEvent) : null;
+        };
+
         NostrEventListener listener = new NostrEventListener() {
             @Override
             public void onEvent(Event event) {
@@ -692,28 +735,24 @@ public class NostrClient {
 
             @Override
             public void onEndOfStoredEvents(String subId) {
+                if (future.isDone()) return;
                 unsubscribe(subscriptionId);
+                future.complete(pickWinner.get());
+            }
 
-                if (authorFirstSeen.isEmpty()) {
-                    future.complete(null);
-                    return;
-                }
-
-                // Find the winner: earliest firstSeen, then lexicographic pubkey for tie-break
-                String winnerPubkey = null;
-                long winnerFirstSeen = Long.MAX_VALUE;
-                for (Map.Entry<String, long[]> entry : authorFirstSeen.entrySet()) {
-                    String pubkey = entry.getKey();
-                    long firstSeen = entry.getValue()[0];
-                    if (firstSeen < winnerFirstSeen
-                        || (firstSeen == winnerFirstSeen && (winnerPubkey == null || pubkey.compareTo(winnerPubkey) < 0))) {
-                        winnerFirstSeen = firstSeen;
-                        winnerPubkey = pubkey;
-                    }
-                }
-
-                Event winnerEvent = authorLatestEvent.get(winnerPubkey);
-                future.complete(winnerEvent != null ? extractResult.apply(winnerEvent) : null);
+            @Override
+            public void onError(String subId, String error) {
+                // CLOSED frame from the relay (rate-limit, auth-required,
+                // etc.) is terminal for this subscription. Settle promptly
+                // with whatever we collected so far instead of waiting for
+                // the timeout. Without this a relay-side rejection looks
+                // identical to "no data exists".
+                if (future.isDone()) return;
+                logger.warn("Relay closed subscription {}: {}", subId, error);
+                // handleClosedMessage already removed the entry, but call
+                // unsubscribe defensively in case of multi-relay setups.
+                unsubscribe(subscriptionId);
+                future.complete(pickWinner.get());
             }
         };
 
@@ -723,7 +762,7 @@ public class NostrClient {
         CompletableFuture.delayedExecutor(queryTimeoutMs, TimeUnit.MILLISECONDS).execute(() -> {
             if (!future.isDone()) {
                 logger.warn("Query timed out after {}ms", queryTimeoutMs);
-                future.complete(null);
+                future.complete(pickWinner.get());
                 unsubscribe(subscriptionId);
             }
         });
@@ -933,11 +972,22 @@ public class NostrClient {
                     return;
                 }
 
-                // Send a subscription request as a ping (relays respond with EOSE)
+                // Send a subscription request as a ping (relays respond with EOSE).
+                // The filter MUST be tightly scoped — an open {"limit":1}
+                // filter with no kinds/authors/#p will, after EOSE, stream
+                // every event the relay receives (NIP-01 live tail),
+                // saturating the connection and exhausting per-connection
+                // subscription slots on busy relays. Scoping by
+                // authors:[self] keeps the live tail empty in practice
+                // (the relay would only forward our own future events).
+                // Note: OkHttp.pingInterval already runs WS frame-level
+                // ping/pong; this app-level REQ exists only as a belt-and-
+                // braces liveness probe and to give the relay a no-op
+                // workload that's easy to reason about.
                 try {
                     String closeMessage = jsonMapper.writeValueAsString(Arrays.asList("CLOSE", "ping"));
                     webSocket.send(closeMessage);
-                    String pingMessage = jsonMapper.writeValueAsString(Arrays.asList("REQ", "ping", Collections.singletonMap("limit", 1)));
+                    String pingMessage = buildPingReqMessage(keyManager.getPublicKeyHex(), jsonMapper);
                     webSocket.send(pingMessage);
                     unansweredPings++;
                 } catch (Exception e) {
@@ -1201,6 +1251,9 @@ public class NostrClient {
                 case "NOTICE":
                     handleNoticeMessage(json);
                     break;
+                case "CLOSED":
+                    handleClosedMessage(json);
+                    break;
                 default:
                     logger.debug("Unknown message type: {}", messageType);
             }
@@ -1250,6 +1303,34 @@ public class NostrClient {
     private void handleNoticeMessage(List<Object> json) {
         String notice = json.size() > 1 ? (String) json.get(1) : "";
         logger.info("Relay notice: {}", notice);
+    }
+
+    /**
+     * Handle CLOSED message from relay (subscription terminated by relay).
+     *
+     * NIP-01 CLOSED frames are terminal for the named subscription on the
+     * relay side. We must remove the entry from {@code subscriptions}
+     * immediately, otherwise:
+     * <ul>
+     *   <li>any reconnect-time resubscribe loop re-issues the REQ,
+     *       triggering the same rejection;</li>
+     *   <li>the entry leaks forever, and the caller silently waits for
+     *       events that will never arrive (typically misdiagnosed as
+     *       "no data found" after the query timeout fires).</li>
+     * </ul>
+     */
+    private void handleClosedMessage(List<Object> json) {
+        if (json.size() < 3) return;
+        String subscriptionId = (String) json.get(1);
+        String message = (String) json.get(2);
+
+        // Remove from local map BEFORE notifying so any listener-driven
+        // follow-up (e.g. retry) starts from a clean slate.
+        SubscriptionInfo subscription = subscriptions.remove(subscriptionId);
+        if (subscription != null && subscription.listener != null) {
+            subscription.listener.onError(subscriptionId, "Subscription closed: " + message);
+        }
+        logger.debug("CLOSED for subscription {}: {}", subscriptionId, message);
     }
 
     private static class SubscriptionInfo {
