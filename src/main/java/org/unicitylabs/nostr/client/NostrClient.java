@@ -916,12 +916,26 @@ public class NostrClient {
     /**
      * Subscribe with a specific subscription ID.
      *
-     * @param subscriptionId the subscription ID to use
+     * @param subscriptionId the subscription ID to use. MUST NOT be
+     *     {@link #PING_SUB_ID} (or any other id starting with the
+     *     reserved {@code __nostr-sdk-} prefix) — those are used
+     *     internally by the keepalive timer and would be forcibly
+     *     CLOSE/REQ'd every ping interval if a caller used them.
      * @param filter the filter for events
      * @param listener the listener for received events
      * @return the subscription ID
+     * @throws IllegalArgumentException if {@code subscriptionId} is
+     *     reserved for SDK-internal use.
      */
     public String subscribe(String subscriptionId, Filter filter, NostrEventListener listener) {
+        if (subscriptionId == null) {
+            throw new IllegalArgumentException("subscriptionId must not be null");
+        }
+        if (subscriptionId.startsWith("__nostr-sdk-")) {
+            throw new IllegalArgumentException(
+                    "Subscription ID '" + subscriptionId + "' uses the reserved "
+                    + "'__nostr-sdk-' prefix — pick a different id.");
+        }
         subscriptions.put(subscriptionId, new SubscriptionInfo(filter, listener));
 
         // Wipe any stale per-relay EOSE/CLOSED markers for this sub_id
@@ -1392,7 +1406,9 @@ public class NostrClient {
                 // toward "still pending" relays. Firing a synthetic
                 // onError gives every active sub a chance to
                 // re-evaluate now that the relay set has shrunk.
-                notifyAllSubscriptionsError("Relay disconnected: " + reason);
+                // Include the relay URL so listeners in a multi-relay
+                // client can attribute which relay dropped.
+                notifyAllSubscriptionsError("Relay disconnected (" + url + "): " + reason);
             }
 
             if (connectFuture != null && !connectFuture.isDone()) {
@@ -1457,7 +1473,7 @@ public class NostrClient {
             // is no longer counted as connected. Without this the
             // query would hang until queryTimeoutMs.
             if (wasConnectedBefore) {
-                notifyAllSubscriptionsError("Relay disconnected: " + safeReason);
+                notifyAllSubscriptionsError("Relay disconnected (" + url + "): " + safeReason);
             }
 
             // Schedule reconnect with exponential backoff if still running
