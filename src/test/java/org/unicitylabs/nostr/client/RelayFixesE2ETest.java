@@ -25,20 +25,30 @@ import static org.junit.Assert.*;
  *   ./gradlew e2eTest --tests "org.unicitylabs.nostr.client.RelayFixesE2ETest" -DnostrRelay=wss://other-relay
  * </pre>
  *
- * <p>These tests cover the three documented defects:</p>
+ * <p>These tests cover, against a real WebSocket connection:</p>
  * <ol>
  *   <li>The keepalive "ping" REQ filter is scoped to {@code authors:[self]}
- *       (not the global {@code {"limit":1}} live tail).</li>
- *   <li>A CLOSED frame from the relay surfaces to the listener via
- *       {@code onError} and is recorded on the sending relay's
- *       {@code closedSubIds} so {@code sendAllSubscriptions} skips it on
- *       reconnect / post-AUTH. The global {@code subscriptions} map is
- *       intentionally left intact (multi-relay clients may still have
- *       the same sub alive on a healthy relay); listener-driven
- *       {@code unsubscribe()} is what cleans it up across all relays.</li>
- *   <li>{@code queryWithFirstSeenWins} settles promptly on a CLOSED frame
- *       instead of waiting the full {@code queryTimeoutMs}.</li>
+ *       (not the global {@code {"limit":1}} live tail) — verified by
+ *       parsing the wire frame from the static
+ *       {@link NostrClient#buildPingReqMessage} helper that the timer
+ *       calls.</li>
+ *   <li>A CLOSED frame surfaces to the listener via {@code onError}.
+ *       The global {@code subscriptions} map is intentionally NOT
+ *       modified by {@code handleClosedMessage} (multi-relay correctness:
+ *       healthy relays may still be streaming); listener-driven
+ *       {@code unsubscribe()} is what cleans the global map.</li>
+ *   <li>{@code queryWithFirstSeenWins} settles promptly on a CLOSED
+ *       frame instead of waiting the full {@code queryTimeoutMs}.</li>
  * </ol>
+ *
+ * <p><b>Note on per-relay {@code closedSubIds} / {@code eosedSubIds}
+ * coverage:</b> these tests inject CLOSED via reflective calls to the
+ * legacy {@code handleRelayMessage(String)} overload (relay=null), which
+ * does NOT update per-relay state. The relay-aware bookkeeping is
+ * covered by unit tests in {@code RelayFixesTest} that construct a
+ * {@code RelayConnection} via reflection — see
+ * {@code closedFrameOnRealRelayPopulatesPerRelayClosedSubIds} and
+ * {@code eosedFrameOnRealRelayPopulatesPerRelayEosedSubIds}.</p>
  */
 public class RelayFixesE2ETest {
 
