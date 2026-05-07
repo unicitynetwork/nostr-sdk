@@ -804,18 +804,27 @@ public class NostrClient {
 
             @Override
             public void onError(String subId, String error) {
-                // CLOSED frame from the relay is terminal for this sub
-                // *on the sending relay*. In a multi-relay client the
-                // same sub_id may still be alive on a healthy relay,
-                // so we must NOT settle on the first CLOSED — that
-                // would prematurely abort a query other relays could
-                // satisfy. Settle only when ALL connected relays have
-                // closed this sub. handleClosedMessage records the
-                // rejection on the sending relay's closedSubIds before
-                // invoking us, so we can decide by inspecting that
-                // state across all connected relays.
+                // Subscription error from the SDK — fired in three
+                // places that all need the same "is it time to
+                // settle?" check:
+                //   1. Relay sent CLOSED for this sub. In a
+                //      multi-relay client the same sub_id may still
+                //      be alive on a healthy relay; settling on the
+                //      first CLOSED would prematurely abort a query
+                //      other relays could satisfy. handleClosedMessage
+                //      records the rejection on the sending relay's
+                //      closedSubIds before invoking us, so we can
+                //      decide via allRelaysDoneFor.
+                //   2. Relay disconnected mid-query (onClosed /
+                //      onFailure → synthetic onError). The relay no
+                //      longer counts as connected, so allRelaysDoneFor
+                //      excludes it.
+                //   3. Client disconnected (disconnect() → synthetic
+                //      onError). All relays are torn down,
+                //      allRelaysDoneFor sees zero connected and
+                //      settles.
                 if (future.isDone()) return;
-                logger.warn("Relay closed subscription {}: {}", subId, error);
+                logger.warn("Subscription error on {}: {}", subId, error);
                 if (allRelaysDoneFor(subscriptionId)) {
                     unsubscribe(subscriptionId);
                     future.complete(pickWinner.get());
