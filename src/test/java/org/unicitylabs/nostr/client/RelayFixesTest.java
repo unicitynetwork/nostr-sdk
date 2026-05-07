@@ -152,6 +152,34 @@ public class RelayFixesTest {
     }
 
     @Test
+    public void isTransientCloseReason_matchesAuthRequiredVariants() {
+        // NIP-42: an auth-required CLOSED is transient — the relay
+        // will let us retry after we sign the AUTH challenge. We
+        // must NOT add such a sub to closedSubIds, otherwise the
+        // in-flight query would settle on the first CLOSED, evict
+        // the sub from the global Map via unsubscribe(), and lose
+        // the post-AUTH retry. The decision is gated entirely on
+        // this helper, so testing it directly is sufficient — the
+        // production wiring is exercised by the e2e tests against
+        // a real connection.
+        assertTrue(NostrClient.isTransientCloseReason("auth-required: please authenticate"));
+        assertTrue(NostrClient.isTransientCloseReason("auth-required: foo"));
+        assertTrue(NostrClient.isTransientCloseReason("auth-required missing tag"));
+
+        // Other reasons are terminal — closedSubIds gets populated
+        // and resubscribeAll skips them on this relay.
+        assertFalse(NostrClient.isTransientCloseReason("rate-limited: too many concurrent REQs"));
+        assertFalse(NostrClient.isTransientCloseReason("blocked: spam"));
+        assertFalse(NostrClient.isTransientCloseReason("error: Maximum concurrent subscription count reached"));
+        assertFalse(NostrClient.isTransientCloseReason("invalid: bad filter"));
+        assertFalse(NostrClient.isTransientCloseReason(""));
+        assertFalse(NostrClient.isTransientCloseReason(null));
+        // Substring matches in the middle don't count — the prefix
+        // must be at the start.
+        assertFalse(NostrClient.isTransientCloseReason("rejected: auth-required somewhere"));
+    }
+
+    @Test
     public void disconnectSettlesInflightQueriesImmediately() throws Exception {
         // Self-audit invariant: calling disconnect() while a query is
         // in-flight must notify its listener so the future settles
