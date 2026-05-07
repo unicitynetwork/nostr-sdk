@@ -206,7 +206,13 @@ public class NostrClient {
      */
     static boolean isTransientCloseReason(String reason) {
         if (reason == null) return false;
-        return reason.startsWith("auth-required:") || reason.startsWith("auth-required ");
+        // Three on-the-wire shapes: `auth-required:...` (NIP-42
+        // standard with reason), `auth-required ...` (whitespace
+        // separator), and bare `auth-required` (no suffix at all —
+        // some relays / tests).
+        return reason.equals("auth-required")
+                || reason.startsWith("auth-required:")
+                || reason.startsWith("auth-required ");
     }
 
     /**
@@ -1298,19 +1304,25 @@ public class NostrClient {
         }
 
         private void resubscribeAfterAuth(WebSocket webSocket) {
-            // Some relays respond to pre-auth REQs with
-            // ["CLOSED","<sub>","auth-required:..."], which lands in
-            // closedSubIds. Others EOSE the pre-auth sub with 0
-            // events because the filter was unsatisfiable without
-            // auth context — that lands in eosedSubIds. Either way,
-            // post-auth those subs are eligible for retry and the
-            // local "still waiting" state must be re-armed for any
-            // in-flight queryWithFirstSeenWins. Clear BOTH markers
-            // before sendAllSubscriptions re-issues them. Permanent
-            // rejections (max_subscriptions, etc.) just get
-            // re-rejected and re-recorded — harmless. Auth-required
-            // and stale-EOSE ones now succeed.
-            closedSubIds.clear();
+            // Two separate per-relay markers, two separate decisions:
+            //
+            //  - closedSubIds: do NOT clear. handleClosedMessage
+            //    already skips the auth-required transient case (via
+            //    isTransientCloseReason), so anything in this set is
+            //    a TERMINAL rejection (rate-limited, blocked, etc.)
+            //    that AUTH does not relax. The sendAllSubscriptions
+            //    guard then correctly skips terminal-rejected subs on
+            //    this relay. They will be retried on the next
+            //    reconnect, when onOpen creates a fresh slot count
+            //    and clears these markers.
+            //
+            //  - eosedSubIds: clear. A relay may have EOSE'd a
+            //    pre-auth sub with 0 events because the filter was
+            //    unsatisfiable without auth context; post-auth the
+            //    same filter might match. We must re-arm the local
+            //    "still waiting" state so any in-flight
+            //    queryWithFirstSeenWins doesn't see this relay as
+            //    already-done from a stale marker.
             eosedSubIds.clear();
             logger.debug("Re-subscribing after auth");
             sendAllSubscriptions(webSocket);
