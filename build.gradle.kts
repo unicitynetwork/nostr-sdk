@@ -53,7 +53,7 @@ dependencies {
     testImplementation("org.awaitility:awaitility:4.2.0")
     testImplementation("org.mockito:mockito-core:5.10.0")
     testImplementation("ch.qos.logback:logback-classic:1.4.11")
-    testImplementation("org.testcontainers:testcontainers:1.20.4")
+    testImplementation("org.testcontainers:testcontainers:2.0.5")
 }
 
 tasks.withType<JavaCompile> {

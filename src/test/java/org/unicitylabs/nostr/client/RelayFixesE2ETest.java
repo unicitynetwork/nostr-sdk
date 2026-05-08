@@ -27,7 +27,7 @@ import static org.junit.Assert.*;
  *
  * <p>These tests cover, against a real WebSocket connection:</p>
  * <ol>
- *   <li>The keepalive "ping" REQ filter is scoped to {@code authors:[self]}
+ *   <li>The keepalive "ping" REQ filter cannot match any real event
  *       (not the global {@code {"limit":1}} live tail) — verified by
  *       parsing the wire frame from the static
  *       {@link NostrClient#buildPingReqMessage} helper that the timer
@@ -113,18 +113,13 @@ public class RelayFixesE2ETest {
     }
 
     @Test
-    public void keepalivePingIsScopedAndNotFirehosed() throws Exception {
+    public void keepalivePingFilterCannotMatchAnyRealEvent() throws Exception {
         // The keepalive timer calls NostrClient.buildPingReqMessage()
         // verbatim each interval and ships the result on the wire,
         // so verifying that helper's output IS verifying the wire
         // shape. We assert it via a real connection (cheap) so the
         // test exercises the full classloader / signing path, not
-        // the helper in isolation. We deliberately do NOT
-        // Thread.sleep to wait for actual ping cycles — Java's
-        // OkHttp WebSocket doesn't give us a per-frame intercept
-        // hook, so the on-wire observation isn't directly
-        // assertable here. The wire shape regression is fully
-        // covered by the helper-output assertion below.
+        // the helper in isolation.
         NostrClient client = new NostrClient(NostrKeyManager.generate());
         try {
             client.connect(RELAY_URL).get(15, TimeUnit.SECONDS);
@@ -137,15 +132,24 @@ public class RelayFixesE2ETest {
             assertEquals(NostrClient.PING_SUB_ID, parsed.get(1));
             @SuppressWarnings("unchecked")
             Map<String, Object> filter = (Map<String, Object>) parsed.get(2);
-            assertEquals(java.util.Collections.singletonList(selfPubkey),
-                    filter.get("authors"));
+
+            // Filter must use the unreachable id pattern — NOT
+            // authors:[self], which matched every event the wallet
+            // itself published and tripped the relay's live-tail
+            // forwarding into echoing kind-31113 transfers back on
+            // the keepalive sub.
+            assertEquals(
+                    java.util.Collections.singletonList(NostrClient.KEEPALIVE_NEVER_MATCH_ID),
+                    filter.get("ids"));
             assertEquals(1, filter.get("limit"));
-            // Critical regression check: the broken filter was {"limit":1}
-            // with no other constraints. If anyone reintroduces an open
-            // filter (kinds present but unbounded, or no authors), this
-            // assertion catches it.
-            assertEquals("Filter must have exactly authors+limit; any other "
-                    + "field reopens the live-tail firehose. Got: " + filter,
+            assertNull("authors must not appear in keepalive filter", filter.get("authors"));
+            assertNull("kinds must not appear in keepalive filter", filter.get("kinds"));
+            assertNull("#p must not appear in keepalive filter", filter.get("#p"));
+            assertFalse(
+                    "wallet pubkey must not appear in keepalive frame; got: " + pingFrame,
+                    pingFrame.contains(selfPubkey));
+            assertEquals("Filter must have exactly ids+limit; any other "
+                    + "field can reopen the live-tail firehose. Got: " + filter,
                     2, filter.size());
         } finally {
             client.disconnect();
