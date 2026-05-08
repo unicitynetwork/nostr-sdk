@@ -18,8 +18,10 @@ import static org.junit.Assert.*;
  *
  * <p>The fixes:</p>
  * <ol>
- *   <li>The keepalive "ping" REQ filter must be scoped to {@code authors:[self]} so
- *       the relay does not stream a global live-tail through it after EOSE.</li>
+ *   <li>The keepalive "ping" REQ filter must use a constraint no real
+ *       event can match, so neither the initial query nor the post-EOSE
+ *       live tail returns wallet events. (Earlier {@code authors:[self]}
+ *       scoping echoed every event the wallet itself published.)</li>
  *   <li>A CLOSED frame from the relay must be surfaced to the listener via
  *       {@code onError} (and recorded per-relay so reconnect resubscribe
  *       skips it), without removing the subscription from the global map —
@@ -52,7 +54,7 @@ public class RelayFixesTest {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     @Test
-    public void pingReqIsScopedToSelfAuthor() throws Exception {
+    public void pingReqFilterCannotMatchAnyRealEvent() throws Exception {
         NostrKeyManager keyManager = NostrKeyManager.generate();
         String selfPubkey = keyManager.getPublicKeyHex();
 
@@ -65,11 +67,24 @@ public class RelayFixesTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> filter = (Map<String, Object>) parsed.get(2);
-        // The two fields the relay must see — and nothing else, otherwise
-        // we widen the live tail.
+        // The filter must be {ids:[<all-zero hash>], limit:1}. Real
+        // event ids are SHA-256 hashes, so an all-zero id is unreachable
+        // and the post-EOSE live tail can never match a future event.
         assertEquals(2, filter.size());
-        assertEquals(java.util.Collections.singletonList(selfPubkey), filter.get("authors"));
+        assertEquals(
+                java.util.Collections.singletonList(NostrClient.KEEPALIVE_NEVER_MATCH_ID),
+                filter.get("ids"));
         assertEquals(1, filter.get("limit"));
+
+        // Regression guards: the previous filter shape (`authors:[self]`)
+        // matched every event the wallet itself published — kind-31113
+        // token transfers, DMs, etc. — and the relay echoed them back
+        // on the keepalive sub. Make sure those fields stay absent.
+        assertNull("authors must not appear in keepalive filter", filter.get("authors"));
+        assertNull("kinds must not appear in keepalive filter", filter.get("kinds"));
+        assertNull("#p must not appear in keepalive filter", filter.get("#p"));
+        assertFalse("wallet pubkey must not appear in keepalive frame: " + pingFrame,
+                pingFrame.contains(selfPubkey));
     }
 
     @Test

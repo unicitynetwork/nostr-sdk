@@ -46,6 +46,29 @@ public class NostrClient {
      */
     static final String PING_SUB_ID = "__nostr-sdk-keepalive__";
 
+    /**
+     * Filter id used by the keepalive REQ. We need a filter the relay
+     * can resolve immediately (so EOSE comes back fast = relay is
+     * alive), but which can NOT match any real event past EOSE (so the
+     * live tail stays empty).
+     *
+     * <p>Earlier iterations used {@code authors:[selfPubkey]} with the
+     * reasoning that "the relay would only forward our own future
+     * events". That reasoning was wrong: it precisely DOES forward
+     * every event the wallet publishes, including kind-31113 token
+     * transfers. Some relays dedupe events across overlapping subs,
+     * so the wallet's own consumer subscription would not receive its
+     * echo and any flow waiting on that echo would time out.</p>
+     *
+     * <p>The filter {@code {"ids":["00...00"]}} asks the relay for a
+     * single event whose id is exactly the all-zero hash. Real Nostr
+     * event ids are SHA-256 over a canonical JSON serialization, so
+     * the all-zero hash is unreachable in practice. Result: instant
+     * EOSE, empty live tail.</p>
+     */
+    static final String KEEPALIVE_NEVER_MATCH_ID =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+
     private final NostrKeyManager keyManager;
     private final OkHttpClient httpClient;
     private final ObjectMapper jsonMapper;
@@ -180,19 +203,24 @@ public class NostrClient {
      * Build the keepalive REQ message ("ping") used by the per-relay
      * health-check timer.
      *
-     * <p>The filter is intentionally scoped to {@code authors:[selfPubkey]}.
-     * An open {@code {"limit":1}} filter (with no kinds/authors/#p) would,
-     * after EOSE, stream every event the relay receives back through this
-     * subscription via NIP-01's live tail — saturating the connection and
-     * exhausting per-connection subscription slots on busy relays.
-     * Scoping by the local pubkey keeps the live tail empty in practice.</p>
+     * <p>The filter is scoped to {@code ids:[KEEPALIVE_NEVER_MATCH_ID]}
+     * so it can not match any real event — neither in the initial
+     * lookup nor in the post-EOSE live tail. See
+     * {@link #KEEPALIVE_NEVER_MATCH_ID} for the rationale.</p>
+     *
+     * <p>The {@code selfPubkey} parameter is retained for API stability
+     * (callers and tests still pass it) but is no longer used in the
+     * filter — including it would re-introduce the live-tail leak that
+     * caused self-published kind-31113 transfers to be echoed back on
+     * the keepalive sub.</p>
      *
      * <p>Package-visible for testing.</p>
      */
+    @SuppressWarnings("unused") // selfPubkey kept for API stability and call-site parity with TS SDK
     static String buildPingReqMessage(String selfPubkey, ObjectMapper jsonMapper)
             throws com.fasterxml.jackson.core.JsonProcessingException {
         java.util.LinkedHashMap<String, Object> pingFilter = new java.util.LinkedHashMap<>();
-        pingFilter.put("authors", java.util.Collections.singletonList(selfPubkey));
+        pingFilter.put("ids", java.util.Collections.singletonList(KEEPALIVE_NEVER_MATCH_ID));
         pingFilter.put("limit", 1);
         return jsonMapper.writeValueAsString(java.util.Arrays.asList("REQ", PING_SUB_ID, pingFilter));
     }
