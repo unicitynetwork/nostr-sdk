@@ -777,6 +777,23 @@ public class NostrClient {
             if (authorState.isEmpty()) {
                 return null;
             }
+            // UNIP-01: prefer marker-carrying (relay-vetted single-owner)
+            // bindings, ignoring the self-asserted created_at. The marker is
+            // read from each author's CURRENT (latest, per NIP-33 replaceable)
+            // event, so a newer unmarked update correctly drops the author from
+            // the marked set. Exactly one marked owner is the relay-enforced
+            // norm; more than one distinct marked author means cross-relay
+            // disagreement — do not guess.
+            List<Event> marked = new ArrayList<>();
+            for (AuthorState state : authorState.values()) {
+                if (NametagBinding.hasNametagOwnershipMarker(state.latestEvent)) {
+                    marked.add(state.latestEvent);
+                }
+            }
+            if (!marked.isEmpty()) {
+                return marked.size() == 1 ? extractResult.apply(marked.get(0)) : null;
+            }
+            // Legacy fallback: first-seen-wins by self-asserted created_at.
             String winnerPubkey = null;
             long winnerFirstSeen = Long.MAX_VALUE;
             for (Map.Entry<String, AuthorState> entry : authorState.entrySet()) {
