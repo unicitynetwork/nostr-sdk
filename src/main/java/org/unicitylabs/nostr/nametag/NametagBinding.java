@@ -24,6 +24,15 @@ public class NametagBinding {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
+     * UNIP-01 namespace label for nametag ownership bindings. A binding carrying
+     * a NIP-32 ["L", UNICITY_NAMETAG_NAMESPACE] label opts into relay-enforced
+     * single-owner semantics: the first author a UNIP-01 relay accepts for a
+     * given identifier (d-tag) owns it, by relay receive order — independent of
+     * the self-asserted created_at. See unicity-tokens-relay/docs/UNIP-01.md.
+     */
+    public static final String UNICITY_NAMETAG_NAMESPACE = "unicity:nametag";
+
+    /**
      * Extended identity parameters for richer binding events.
      * All fields are optional — when provided, they are included in the
      * event content and indexed via 't' tags for reverse lookup.
@@ -126,6 +135,8 @@ public class NametagBinding {
         // Create tags
         List<List<String>> tags = new ArrayList<>();
         tags.add(Arrays.asList("d", hashedNametag));
+        // UNIP-01: opt this binding into relay-enforced single-owner semantics.
+        tags.add(Arrays.asList("L", UNICITY_NAMETAG_NAMESPACE));
         tags.add(Arrays.asList("nametag", hashedNametag));
         tags.add(Arrays.asList("t", hashedNametag));
         tags.add(Arrays.asList("address", unicityAddress));
@@ -393,6 +404,28 @@ public class NametagBinding {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * UNIP-01: true if this binding event carries the single-owner namespace
+     * marker (a NIP-32 ["L", UNICITY_NAMETAG_NAMESPACE] label). Marked bindings
+     * are vetted by UNIP-01 relays for single ownership and are preferred at
+     * resolution over unmarked (legacy) bindings, independent of created_at.
+     *
+     * @param event Binding event
+     * @return true if the UNIP-01 nametag marker is present
+     */
+    public static boolean hasNametagOwnershipMarker(Event event) {
+        if (event == null || event.getTags() == null) {
+            return false;
+        }
+        for (List<String> tag : event.getTags()) {
+            if (tag.size() >= 2 && "L".equals(tag.get(0))
+                    && UNICITY_NAMETAG_NAMESPACE.equals(tag.get(1))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

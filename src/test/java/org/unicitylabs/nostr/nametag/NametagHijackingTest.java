@@ -33,9 +33,36 @@ public class NametagHijackingTest {
      */
     private static Event createSignedBinding(NostrKeyManager km, String nametag, long createdAt) throws Exception {
         Event event = NametagBinding.createBindingEvent(km, nametag, km.getPublicKeyHex());
+        // These tests exercise the LEGACY (unmarked) resolution fallback, where
+        // selection is first-seen-wins by created_at. Strip the UNIP-01 marker so
+        // the events take that path; the marked (UNIP-01) path is covered by the
+        // createMarkedBinding tests below.
+        event.setTags(stripMarker(event.getTags()));
         // Override created_at and re-sign to create a valid event at a specific timestamp
         event.setCreatedAt(createdAt);
         // Re-calculate ID and re-sign since we changed created_at
+        resignEvent(km, event);
+        return event;
+    }
+
+    /** Remove the UNIP-01 ["L", ...] marker tag(s) to simulate a legacy/unmarked binding. */
+    private static java.util.List<java.util.List<String>> stripMarker(java.util.List<java.util.List<String>> tags) {
+        java.util.List<java.util.List<String>> out = new java.util.ArrayList<>();
+        for (java.util.List<String> tag : tags) {
+            if (!(tag.size() >= 1 && "L".equals(tag.get(0)))) {
+                out.add(tag);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Create a MARKED (UNIP-01) binding at a specific created_at. createBindingEvent
+     * emits the marker; we keep it and re-sign so the marked resolution path is used.
+     */
+    private static Event createMarkedBinding(NostrKeyManager km, String nametag, long createdAt) throws Exception {
+        Event event = NametagBinding.createBindingEvent(km, nametag, km.getPublicKeyHex());
+        event.setCreatedAt(createdAt);
         resignEvent(km, event);
         return event;
     }
@@ -408,5 +435,42 @@ public class NametagHijackingTest {
         // Resolution still returns Alice
         String owner = bobClient.queryPubkeyByNametag("protected").get();
         assertEquals(alice.getPublicKeyHex(), owner);
+    }
+
+    // =========================================================================
+    // UNIP-01: marker-preferring resolution (created_at is not authoritative)
+    // =========================================================================
+
+    @Test
+    public void markedOwnerWinsOverUnmarkedBackdatedBinding() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+
+        Event owner = createMarkedBinding(alice, "alice", 2000);   // UNIP-01 marked
+        Event legacy = createSignedBinding(attacker, "alice", 1);  // unmarked, backdated
+
+        FakeNostrClient client = new FakeNostrClient(alice);
+        client.setEventsToDeliver(legacy, owner);
+
+        String resolved = client.queryPubkeyByNametag("alice").get();
+        // The relay-vetted (marked) owner is selected; the lower created_at is ignored.
+        assertEquals(alice.getPublicKeyHex(), resolved);
+        assertNotEquals(attacker.getPublicKeyHex(), resolved);
+    }
+
+    @Test
+    public void twoDistinctMarkedOwnersResolveToNull() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+
+        Event a = createMarkedBinding(alice, "alice", 2000);
+        Event b = createMarkedBinding(bob, "alice", 1); // lower created_at, also marked
+
+        FakeNostrClient client = new FakeNostrClient(alice);
+        client.setEventsToDeliver(a, b);
+
+        String resolved = client.queryPubkeyByNametag("alice").get();
+        // Must NOT pick the lower created_at; ambiguous -> null.
+        assertNull(resolved);
     }
 }
