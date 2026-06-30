@@ -778,13 +778,16 @@ public class NostrClient {
                 return null;
             }
             // UNIP-01: prefer marker-carrying (relay-vetted single-owner)
-            // bindings, ignoring the self-asserted created_at. Exactly one
-            // marked owner is the relay-enforced norm; more than one distinct
-            // marked author means cross-relay disagreement — do not guess.
+            // bindings, ignoring the self-asserted created_at. The marker is
+            // read from each author's CURRENT (latest, per NIP-33 replaceable)
+            // event, so a newer unmarked update correctly drops the author from
+            // the marked set. Exactly one marked owner is the relay-enforced
+            // norm; more than one distinct marked author means cross-relay
+            // disagreement — do not guess.
             List<Event> marked = new ArrayList<>();
             for (AuthorState state : authorState.values()) {
-                if (state.latestMarked != null) {
-                    marked.add(state.latestMarked);
+                if (NametagBinding.hasNametagOwnershipMarker(state.latestEvent)) {
+                    marked.add(state.latestEvent);
                 }
             }
             if (!marked.isEmpty()) {
@@ -819,22 +822,16 @@ public class NostrClient {
 
                 String pubkey = event.getPubkey();
                 long createdAt = event.getCreatedAt();
-                boolean marked = NametagBinding.hasNametagOwnershipMarker(event);
 
                 authorState.compute(pubkey, (k, prev) -> {
                     if (prev == null) {
-                        return new AuthorState(createdAt, event, marked ? event : null);
+                        return new AuthorState(createdAt, event);
                     }
                     long firstSeen = Math.min(prev.firstSeen, createdAt);
                     Event latest = createdAt > prev.latestEvent.getCreatedAt()
                             ? event
                             : prev.latestEvent;
-                    Event latestMarked = prev.latestMarked;
-                    if (marked && (latestMarked == null
-                            || createdAt > latestMarked.getCreatedAt())) {
-                        latestMarked = event;
-                    }
-                    return new AuthorState(firstSeen, latest, latestMarked);
+                    return new AuthorState(firstSeen, latest);
                 });
             }
 
@@ -1730,13 +1727,10 @@ public class NostrClient {
     private static class AuthorState {
         final long firstSeen;
         final Event latestEvent;
-        /** UNIP-01: latest marker-carrying (single-owner) binding, or null. */
-        final Event latestMarked;
 
-        AuthorState(long firstSeen, Event latestEvent, Event latestMarked) {
+        AuthorState(long firstSeen, Event latestEvent) {
             this.firstSeen = firstSeen;
             this.latestEvent = latestEvent;
-            this.latestMarked = latestMarked;
         }
     }
 }

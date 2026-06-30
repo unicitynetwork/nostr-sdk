@@ -420,7 +420,7 @@ public class NametagBinding {
             return false;
         }
         for (List<String> tag : event.getTags()) {
-            if (tag.size() >= 2 && "L".equals(tag.get(0))
+            if (tag != null && tag.size() >= 2 && "L".equals(tag.get(0))
                     && UNICITY_NAMETAG_NAMESPACE.equals(tag.get(1))) {
                 return true;
             }
