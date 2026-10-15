@@ -37,7 +37,7 @@ import static org.junit.Assert.*;
  *       modified by {@code handleClosedMessage} (multi-relay correctness:
  *       healthy relays may still be streaming); listener-driven
  *       {@code unsubscribe()} is what cleans the global map.</li>
- *   <li>{@code queryWithFirstSeenWins} settles promptly on a CLOSED
+ *   <li>{@code queryBindingClaimants} settles promptly on a CLOSED
  *       frame instead of waiting the full {@code queryTimeoutMs}.</li>
  * </ol>
  *
@@ -198,7 +198,7 @@ public class RelayFixesE2ETest {
             assertNotNull("Listener must be notified of the CLOSED reason", errorMsg.get());
             assertTrue(errorMsg.get().contains("Maximum concurrent subscription count reached"));
 
-            // The listener (in production, queryWithFirstSeenWins.onError)
+            // The listener (in production, queryBindingClaimants.onError)
             // would call unsubscribe() to give up across all relays; that's
             // when the global map is cleaned.
             client.unsubscribe(subId);
@@ -212,7 +212,7 @@ public class RelayFixesE2ETest {
 
     @Test
     public void queryFutureSettlesPromptlyOnSyntheticClosed() throws Exception {
-        // Same wiring test but for queryWithFirstSeenWins specifically:
+        // Same wiring test but for queryBindingClaimants specifically:
         // proves the future settles via the onError path, not via the
         // queryTimeoutMs fallback.
         //

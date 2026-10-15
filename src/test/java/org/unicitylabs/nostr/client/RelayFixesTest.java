@@ -26,7 +26,7 @@ import static org.junit.Assert.*;
  *       {@code onError} (and recorded per-relay so reconnect resubscribe
  *       skips it), without removing the subscription from the global map —
  *       healthy relays in a multi-relay client may still be streaming.</li>
- *   <li>{@code queryWithFirstSeenWins} must surface CLOSED to the listener
+ *   <li>{@code queryBindingClaimants} must surface CLOSED to the listener
  *       so the awaiting future settles promptly instead of waiting the
  *       full {@code queryTimeoutMs}.</li>
  * </ol>
@@ -386,7 +386,7 @@ public class RelayFixesTest {
                 "Future should settle within ~2s after CLOSED, took " + elapsedMs + "ms",
                 elapsedMs < 5_000);
 
-        // The listener-driven unsubscribe (queryWithFirstSeenWins.onError ->
+        // The listener-driven unsubscribe (queryBindingClaimants.onError ->
         // unsubscribe) cleans the sub from the global map.
         subs = readPrivateMap(client, "subscriptions");
         assertFalse(subs.containsKey(querySubId));

@@ -11,7 +11,7 @@ Java SDK for Nostr protocol integration with Unicity blockchain applications.
 - **Payment Requests**: Request payments from other users via encrypted Nostr messages
 - **Nametag Bindings**: Map Unicity nametags to Nostr public keys with anti-hijacking protection
 - **Identity Bindings**: Publish extended identity (chain pubkey, L1 address, direct/proxy addresses) with reverse lookup
-- **Anti-Hijacking**: First-seen-wins resolution with signature verification prevents nametag takeover
+- **Anti-Hijacking**: Single-owner resolution (UNIP-01) with signature verification; competing claims resolve to null, never to a guess
 - **NIP-04 Encryption**: Legacy AES-CBC encrypted direct messages with automatic compression
 - **Location Broadcasting**: Agent location discovery for P2P networks
 - **Profile Management**: Standard Nostr profiles (NIP-01)
@@ -348,7 +348,7 @@ client.publishIdentityBinding(identity)
         System.out.println("Identity binding published: " + success);
     });
 
-// Query pubkey by nametag (uses first-seen-wins anti-hijacking resolution)
+// Query pubkey by nametag (single owner, or null if unclaimed or contested)
 String pubkey = client.queryPubkeyByNametag("alice").get();
 System.out.println("Found pubkey: " + pubkey);
 
@@ -505,7 +505,7 @@ See [PAYMENT_REQUEST_PROTOCOL.md](PAYMENT_REQUEST_PROTOCOL.md) for detailed prot
 - **Event Kind**: 30078 (parameterized replaceable)
 - **Privacy**: Nametags are hashed before publishing; encrypted copy stored for wallet recovery
 - **Tags**: `d` (hashed nametag), `nametag`, `t` (indexed hashes for nametag + addresses), `address`, `pubkey`, `l1`
-- **Anti-hijacking**: First-seen-wins resolution across authors; latest-wins for same author
+- **Anti-hijacking**: Single owner or null across authors; latest-wins for same author
 - **Signature verification**: Events with invalid signatures are silently rejected during queries
 - **Conflict detection**: `publishNametagBinding()` checks for existing claims before publishing
 
@@ -522,12 +522,13 @@ When identity params are provided, the plaintext nametag is encrypted with AES-2
 
 #### Query Resolution Strategy
 
-All nametag/address queries use first-seen-wins anti-hijacking:
+All nametag/address queries resolve to a single owner, or null:
 1. Collect all matching events from relay (no `limit`)
-2. Verify each event's Schnorr signature (reject forged events)
-3. Track per-author earliest `created_at` and latest event
-4. Winner = author with smallest first appearance; tie-break by lexicographic pubkey
-5. Return data from the winner's latest event (most complete)
+2. Keep only events that bind the queried identifier: for a nametag, the `d` tag must be the nametag's hash (the tag a UNIP-01 relay vets ownership of); for an address, the event must carry the address's `t` tag
+3. Verify each event's Schnorr signature (reject forged events)
+4. Track each author's latest event
+5. Nametags only: if any author's latest binding carries the UNIP-01 marker `["L", "unicity:nametag"]`, consider only marked authors (address lookups ignore the marker — it vouches for the nametag, not the addresses)
+6. Exactly one remaining author resolves to its latest event; more than one is ambiguous and resolves to null. `created_at` is self-asserted, so it never chooses between authors
 
 ## Dependencies
 

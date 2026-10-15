@@ -15,7 +15,9 @@ import static org.junit.Assert.*;
  * Tests for nametag hijacking prevention.
  *
  * Verifies the two core anti-hijacking mechanisms:
- * 1. First-seen-wins: queryPubkeyByNametag returns the earliest binding author
+ * 1. No guessing between authors: when more than one author publishes a legacy
+ *    (unmarked) binding for a nametag, resolution returns null — created_at is
+ *    self-asserted, so it never picks a winner
  * 2. Conflict detection: publishNametagBinding rejects if nametag is claimed by another pubkey
  *
  * These tests use a FakeNostrClient that overrides subscribe() to deliver
@@ -33,9 +35,9 @@ public class NametagHijackingTest {
      */
     private static Event createSignedBinding(NostrKeyManager km, String nametag, long createdAt) throws Exception {
         Event event = NametagBinding.createBindingEvent(km, nametag, km.getPublicKeyHex());
-        // These tests exercise the LEGACY (unmarked) resolution fallback, where
-        // selection is first-seen-wins by created_at. Strip the UNIP-01 marker so
-        // the events take that path; the marked (UNIP-01) path is covered by the
+        // These tests exercise the LEGACY (unmarked) resolution path, where a
+        // single author resolves and several authors are ambiguous. Strip the
+        // UNIP-01 marker so the events take that path; the marked (UNIP-01) path is covered by the
         // createMarkedBinding tests below.
         event.setTags(stripMarker(event.getTags()));
         // Override created_at and re-sign to create a valid event at a specific timestamp
@@ -126,27 +128,28 @@ public class NametagHijackingTest {
     }
 
     // =========================================================================
-    // First-seen-wins: queryPubkeyByNametag
+    // Ambiguity: queryPubkeyByNametag
     // =========================================================================
 
     @Test
-    public void shouldReturnPubkeyOfEarliestBindingEvent() throws Exception {
+    public void shouldReturnNullWhenTwoAuthorsPublishLegacyBindings() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
         NostrKeyManager bob = NostrKeyManager.generate();
 
+        // Alice's binding says 1000, Bob's says 2000 — but both are
+        // self-asserted, and Bob could just as well have claimed 1.
         Event aliceEvent = createSignedBinding(alice, "coolname", 1000);
         Event bobEvent = createSignedBinding(bob, "coolname", 2000);
 
         FakeNostrClient client = new FakeNostrClient(alice);
-        // Relay returns both events (order doesn't matter — code picks earliest)
         client.setEventsToDeliver(bobEvent, aliceEvent);
 
         String owner = client.queryPubkeyByNametag("coolname").get();
-        assertEquals(alice.getPublicKeyHex(), owner);
+        assertNull(owner);
     }
 
     @Test
-    public void shouldPickEarliestEvenWhenAttackerEventArrivesFirst() throws Exception {
+    public void shouldReturnNullWhateverTheDeliveryOrder() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
         NostrKeyManager bob = NostrKeyManager.generate();
 
@@ -154,12 +157,10 @@ public class NametagHijackingTest {
         Event bobEvent = createSignedBinding(bob, "target", 2000);
 
         FakeNostrClient client = new FakeNostrClient(alice);
-        // Bob's event arrives first
-        client.setEventsToDeliver(bobEvent, aliceEvent);
+        client.setEventsToDeliver(aliceEvent, bobEvent);
 
         String owner = client.queryPubkeyByNametag("target").get();
-        assertEquals(alice.getPublicKeyHex(), owner);
-        assertNotEquals(bob.getPublicKeyHex(), owner);
+        assertNull(owner);
     }
 
     @Test
@@ -185,7 +186,7 @@ public class NametagHijackingTest {
     }
 
     @Test
-    public void shouldHandleMultipleHijackAttemptsAndReturnOriginalOwner() throws Exception {
+    public void shouldReturnNullUnderMultipleCompetingLegacyBindings() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
         NostrKeyManager attacker1 = NostrKeyManager.generate();
         NostrKeyManager attacker2 = NostrKeyManager.generate();
@@ -198,15 +199,30 @@ public class NametagHijackingTest {
         client.setEventsToDeliver(attack2Event, attack1Event, aliceEvent);
 
         String owner = client.queryPubkeyByNametag("popular").get();
-        assertEquals(alice.getPublicKeyHex(), owner);
+        assertNull(owner);
     }
 
     // =========================================================================
-    // First-seen-wins: queryBindingByNametag
+    // queryBindingByNametag
     // =========================================================================
 
     @Test
-    public void shouldReturnBindingInfoFromEarliestEvent() throws Exception {
+    public void shouldReturnBindingInfoFromOnlyAuthor() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+
+        Event aliceEvent = createSignedBinding(alice, "richinfo", 1000);
+
+        FakeNostrClient client = new FakeNostrClient(alice);
+        client.setEventsToDeliver(aliceEvent);
+
+        NametagBinding.BindingInfo info = client.queryBindingByNametag("richinfo").get();
+        assertNotNull(info);
+        assertEquals(alice.getPublicKeyHex(), info.getTransportPubkey());
+        assertEquals(1000L * 1000, info.getTimestamp());
+    }
+
+    @Test
+    public void shouldReturnNullBindingInfoWhenTwoAuthorsPublishLegacyBindings() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
         NostrKeyManager bob = NostrKeyManager.generate();
 
@@ -216,10 +232,7 @@ public class NametagHijackingTest {
         FakeNostrClient client = new FakeNostrClient(alice);
         client.setEventsToDeliver(bobEvent, aliceEvent);
 
-        NametagBinding.BindingInfo info = client.queryBindingByNametag("richinfo").get();
-        assertNotNull(info);
-        assertEquals(alice.getPublicKeyHex(), info.getTransportPubkey());
-        assertEquals(1000L * 1000, info.getTimestamp());
+        assertNull(client.queryBindingByNametag("richinfo").get());
     }
 
     @Test
@@ -265,10 +278,11 @@ public class NametagHijackingTest {
     }
 
     @Test
-    public void shouldReturnLatestSameAuthorEvenWhenAttackerPresent() throws Exception {
+    public void shouldReturnNullWhenAnotherAuthorIsAlsoPresent() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
         NostrKeyManager bob = NostrKeyManager.generate();
 
+        // Alice: old binding at 1000, updated at 3000; Bob's binding says 2000.
         Event aliceOld = createSignedBinding(alice, "contested", 1000);
         Event aliceNew = createSignedBinding(alice, "contested", 3000);
         Event bobEvent = createSignedBinding(bob, "contested", 2000);
@@ -276,28 +290,21 @@ public class NametagHijackingTest {
         FakeNostrClient client = new FakeNostrClient(alice);
         client.setEventsToDeliver(bobEvent, aliceNew, aliceOld);
 
-        NametagBinding.BindingInfo info = client.queryBindingByNametag("contested").get();
-        assertNotNull(info);
-        // Alice wins (earliest first-seen = 1000)
-        assertEquals(alice.getPublicKeyHex(), info.getTransportPubkey());
-        // But we get Alice's LATEST event (timestamp 3000)
-        assertEquals(3000L * 1000, info.getTimestamp());
+        // Alice's extra event does not make her more of an owner: two authors.
+        assertNull(client.queryBindingByNametag("contested").get());
     }
 
     @Test
-    public void shouldPickEarliestAuthorWithMultipleSameAuthorEvents() throws Exception {
+    public void shouldResolveOneAuthorWithSeveralEvents() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
-        NostrKeyManager bob = NostrKeyManager.generate();
 
         Event alice1 = createSignedBinding(alice, "multiauth", 1000);
         Event alice2 = createSignedBinding(alice, "multiauth", 3000);
-        Event bobEvent = createSignedBinding(bob, "multiauth", 2000);
 
         FakeNostrClient client = new FakeNostrClient(alice);
-        client.setEventsToDeliver(alice2, bobEvent, alice1);
+        client.setEventsToDeliver(alice2, alice1);
 
         String owner = client.queryPubkeyByNametag("multiauth").get();
-        // Alice first appeared at 1000, Bob at 2000 → Alice wins
         assertEquals(alice.getPublicKeyHex(), owner);
     }
 
@@ -358,6 +365,56 @@ public class NametagHijackingTest {
     }
 
     @Test
+    public void shouldRejectWhenTwoOtherAuthorsContestNametag() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+        NostrKeyManager carol = NostrKeyManager.generate();
+
+        // Contested resolves to null, but null here does not mean "available".
+        Event aliceEvent = createSignedBinding(alice, "contested", 1000);
+        Event bobEvent = createSignedBinding(bob, "contested", 2000);
+
+        java.util.concurrent.atomic.AtomicBoolean published = new java.util.concurrent.atomic.AtomicBoolean();
+        FakeNostrClient carolClient = new FakeNostrClient(carol) {
+            @Override
+            public CompletableFuture<String> publishEvent(Event event) {
+                published.set(true);
+                return CompletableFuture.completedFuture("event-id");
+            }
+        };
+        carolClient.setEventsToDeliver(aliceEvent, bobEvent);
+
+        try {
+            carolClient.publishNametagBinding("contested", carol.getPublicKeyHex()).get();
+            fail("Expected exception for contested nametag");
+        } catch (Exception e) {
+            assertTrue(e.getMessage().contains("already claimed") || e.getCause().getMessage().contains("already claimed"));
+        }
+        assertFalse(published.get());
+    }
+
+    @Test
+    public void shouldSucceedWhenPublisherIsOneOfTheContestingAuthors() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager bob = NostrKeyManager.generate();
+
+        // Lets a legacy owner republish (e.g. migrate to a marked binding) even
+        // when someone else has published a competing legacy binding.
+        Event aliceEvent = createSignedBinding(alice, "contested", 1000);
+        Event bobEvent = createSignedBinding(bob, "contested", 2000);
+
+        FakeNostrClient client = new FakeNostrClient(alice) {
+            @Override
+            public CompletableFuture<String> publishEvent(Event event) {
+                return CompletableFuture.completedFuture("event-id");
+            }
+        };
+        client.setEventsToDeliver(aliceEvent, bobEvent);
+
+        assertTrue(client.publishNametagBinding("contested", alice.getPublicKeyHex()).get());
+    }
+
+    @Test
     public void shouldSucceedWhenNametagIsUnclaimed() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
 
@@ -397,21 +454,22 @@ public class NametagHijackingTest {
     // =========================================================================
 
     @Test
-    public void aliceRegistersBobTriesToHijackResolutionStillReturnsAlice() throws Exception {
+    public void legacyBindingContestedByBobNeverResolvesToBob() throws Exception {
         NostrKeyManager alice = NostrKeyManager.generate();
         NostrKeyManager bob = NostrKeyManager.generate();
 
         Event aliceEvent = createSignedBinding(alice, "alice", 1000);
+        // Unmarked bindings are not relay-vetted, so nothing stops Bob publishing one.
         Event bobEvent = createSignedBinding(bob, "alice", 2000);
 
-        // Any client resolving "alice" should get Alice's pubkey (earliest)
+        // Nothing the client can see tells the real owner apart, so resolution
+        // refuses rather than sending to Bob.
         NostrKeyManager resolver = NostrKeyManager.generate();
         FakeNostrClient resolverClient = new FakeNostrClient(resolver);
         resolverClient.setEventsToDeliver(bobEvent, aliceEvent);
 
         String resolvedPubkey = resolverClient.queryPubkeyByNametag("alice").get();
-        assertEquals(alice.getPublicKeyHex(), resolvedPubkey);
-        assertNotEquals(bob.getPublicKeyHex(), resolvedPubkey);
+        assertNull(resolvedPubkey);
     }
 
     @Test
@@ -472,5 +530,203 @@ public class NametagHijackingTest {
         String resolved = client.queryPubkeyByNametag("alice").get();
         // Must NOT pick the lower created_at; ambiguous -> null.
         assertNull(resolved);
+    }
+
+    @Test
+    public void twoUnmarkedAuthorsAreAmbiguousNeverDecidedByCreatedAt() throws Exception {
+        NostrKeyManager alice = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+
+        Event a = createSignedBinding(alice, "alice", 2000);
+        Event b = createSignedBinding(attacker, "alice", 1); // unmarked, backdated
+
+        FakeNostrClient client = new FakeNostrClient(alice);
+        client.setEventsToDeliver(a, b);
+
+        // The relay enforces nothing for unmarked bindings, so anyone can publish
+        // one under the victim's d tag with any created_at. Refuse to guess.
+        assertNull(client.queryPubkeyByNametag("alice").get());
+    }
+
+    // =========================================================================
+    // UNIP-01: only events that bind the queried identifier count
+    // =========================================================================
+
+    private static final String ATTACKER_OWN_D = NametagUtils.hashNametag("mallory");
+    private static final String VICTIM_CHAIN = "02" + "a".repeat(64);
+    private static final String ATTACKER_CHAIN = "02" + "f".repeat(64);
+
+    /**
+     * A signed kind-30078 event under the author's OWN d tag that also carries
+     * tTags. Anyone can publish this: the relay vets only the d tag (and only
+     * when the event is marked), so t tags are free-form.
+     */
+    private static Event eventCarryingTags(NostrKeyManager km, String dTag, java.util.List<String> tTags,
+                                           java.util.Map<String, String> content, long createdAt,
+                                           boolean marked) throws Exception {
+        Event event = NametagBinding.createBindingEvent(km, "mallory", km.getPublicKeyHex());
+        java.util.List<java.util.List<String>> tags = new java.util.ArrayList<>();
+        tags.add(java.util.Arrays.asList("d", dTag));
+        if (marked) {
+            tags.add(java.util.Arrays.asList("L", NametagBinding.UNICITY_NAMETAG_NAMESPACE));
+        }
+        for (String t : tTags) {
+            tags.add(java.util.Arrays.asList("t", t));
+        }
+        event.setTags(tags);
+        event.setContent(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(content));
+        event.setCreatedAt(createdAt);
+        resignEvent(km, event);
+        return event;
+    }
+
+    private static java.util.Map<String, String> content(String... kv) {
+        java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) {
+            m.put(kv[i], kv[i + 1]);
+        }
+        return m;
+    }
+
+    @Test
+    public void nametagLookupIgnoresMarkedBindingForAnotherNametagCarryingVictimTag() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+        String victimTag = NametagUtils.hashNametag("alice");
+
+        Event owner = createMarkedBinding(victim, "alice", 2000);
+        Event rogue = eventCarryingTags(attacker, ATTACKER_OWN_D, java.util.Arrays.asList(ATTACKER_OWN_D, victimTag),
+                content("public_key", ATTACKER_CHAIN, "nametag", "alice"), 2000, true);
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(owner, rogue);
+
+        assertEquals(victim.getPublicKeyHex(), client.queryPubkeyByNametag("alice").get());
+    }
+
+    @Test
+    public void markedBindingForAnotherNametagCannotTakeOverLegacyNametag() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+        String victimTag = NametagUtils.hashNametag("alice");
+
+        Event legacy = createSignedBinding(victim, "alice", 2000);
+        Event rogue = eventCarryingTags(attacker, ATTACKER_OWN_D, java.util.Arrays.asList(ATTACKER_OWN_D, victimTag),
+                content("public_key", ATTACKER_CHAIN, "nametag", "alice"), 2000, true);
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(legacy, rogue);
+
+        NametagBinding.BindingInfo info = client.queryBindingByNametag("alice").get();
+        assertNotNull(info);
+        assertEquals(victim.getPublicKeyHex(), info.getTransportPubkey());
+    }
+
+    @Test
+    public void backdatedUnmarkedEventUnderAnotherDTagCannotTakeOverLegacyNametag() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+
+        Event legacy = createSignedBinding(victim, "alice", 2000);
+        Event rogue = eventCarryingTags(attacker, "atk-d",
+                java.util.Collections.singletonList(NametagUtils.hashNametag("alice")),
+                content("public_key", ATTACKER_CHAIN, "nametag", "alice"), 1, false);
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(legacy, rogue);
+
+        assertEquals(victim.getPublicKeyHex(), client.queryPubkeyByNametag("alice").get());
+    }
+
+    @Test
+    public void publishNametagBindingIsNotBlockedByBindingForAnotherNametag() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+
+        Event rogue = eventCarryingTags(attacker, ATTACKER_OWN_D,
+                java.util.Arrays.asList(ATTACKER_OWN_D, NametagUtils.hashNametag("fresh")),
+                content("nametag", "fresh"), 2000, true);
+
+        FakeNostrClient client = new FakeNostrClient(victim) {
+            @Override
+            public CompletableFuture<String> publishEvent(Event event) {
+                return CompletableFuture.completedFuture("event-id");
+            }
+        };
+        client.setEventsToDeliver(rogue);
+
+        assertTrue(client.publishNametagBinding("fresh", victim.getPublicKeyHex()).get());
+    }
+
+    private static Event victimIdentity(NostrKeyManager victim, String address) throws Exception {
+        NametagBinding.IdentityBindingParams params = new NametagBinding.IdentityBindingParams();
+        params.setPublicKey(VICTIM_CHAIN);
+        params.setDirectAddress(address);
+        return NametagBinding.createIdentityBindingEvent(victim, params);
+    }
+
+    @Test
+    public void addressLookupResolvesTheOnlyAuthor() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        String address = "DIRECT://victim-address";
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(victimIdentity(victim, address));
+
+        NametagBinding.BindingInfo info = client.queryBindingByAddress(address).get();
+        assertNotNull(info);
+        assertEquals(victim.getPublicKeyHex(), info.getTransportPubkey());
+        assertEquals(VICTIM_CHAIN, info.getPublicKey());
+    }
+
+    @Test
+    public void addressLookupWithTwoAuthorsIsAmbiguousNeverDecidedByCreatedAt() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+        String address = "DIRECT://victim-address";
+
+        Event rogue = eventCarryingTags(attacker, "atk-d",
+                java.util.Collections.singletonList(NametagUtils.hashAddressForTag(address)),
+                content("public_key", ATTACKER_CHAIN, "direct_address", address), 1, false);
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(victimIdentity(victim, address), rogue);
+
+        assertNull(client.queryBindingByAddress(address).get());
+    }
+
+    @Test
+    public void addressLookupIgnoresTheOwnershipMarker() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+        String address = "DIRECT://victim-address";
+
+        // A marked binding vouches for its own nametag, not for an address.
+        Event rogue = eventCarryingTags(attacker, ATTACKER_OWN_D,
+                java.util.Arrays.asList(ATTACKER_OWN_D, NametagUtils.hashAddressForTag(address)),
+                content("public_key", ATTACKER_CHAIN, "direct_address", address), 2000, true);
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(victimIdentity(victim, address), rogue);
+
+        assertNull(client.queryBindingByAddress(address).get());
+    }
+
+    @Test
+    public void addressLookupIgnoresRelayInjectedEventsWithoutTheAddressTag() throws Exception {
+        NostrKeyManager victim = NostrKeyManager.generate();
+        NostrKeyManager attacker = NostrKeyManager.generate();
+        String address = "DIRECT://victim-address";
+
+        Event unrelated = eventCarryingTags(attacker, "atk-d",
+                java.util.Collections.singletonList(NametagUtils.hashAddressForTag("DIRECT://other")),
+                content("public_key", ATTACKER_CHAIN, "direct_address", address), 1, false);
+
+        FakeNostrClient client = new FakeNostrClient(NostrKeyManager.generate());
+        client.setEventsToDeliver(victimIdentity(victim, address), unrelated);
+
+        NametagBinding.BindingInfo info = client.queryBindingByAddress(address).get();
+        assertNotNull(info);
+        assertEquals(victim.getPublicKeyHex(), info.getTransportPubkey());
     }
 }
