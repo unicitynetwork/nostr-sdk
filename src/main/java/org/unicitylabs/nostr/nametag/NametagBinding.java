@@ -269,7 +269,7 @@ public class NametagBinding {
     /**
      * Create a filter to find Nostr pubkey by nametag.
      * No limit is set so the relay returns all matching events,
-     * allowing first-seen-wins resolution across authors.
+     * so resolution sees every competing claim.
      *
      * @param nametagId Nametag identifier
      * @param defaultCountry Default country for phone normalization

@@ -325,7 +325,7 @@ public class NostrClient {
         // Mark every relay disconnected synchronously BEFORE we
         // notify subscriptions below, so any listener that consults
         // allRelaysDoneFor sees zero connected relays and settles
-        // immediately. Without this, queryWithFirstSeenWins futures
+        // immediately. Without this, queryBindingClaimants futures
         // hung until queryTimeoutMs after the user explicitly tore
         // down the client.
         for (RelayConnection connection : relayConnections.values()) {
@@ -333,7 +333,7 @@ public class NostrClient {
         }
 
         // Notify in-flight subscriptions that we're shutting down.
-        // Listener-driven settlement (queryWithFirstSeenWins.onError)
+        // Listener-driven settlement (queryBindingClaimants.onError)
         // re-checks allRelaysDoneFor; since we just closed every
         // relay it's trivially true and the future resolves now.
         notifyAllSubscriptionsError("Client disconnected");
@@ -657,8 +657,11 @@ public class NostrClient {
      */
     public CompletableFuture<Boolean> publishNametagBinding(String nametagId, String unicityAddress,
                                                               NametagBinding.IdentityBindingParams identity) {
-        return queryPubkeyByNametag(nametagId).thenCompose(existingOwner -> {
-            if (existingOwner != null && !existingOwner.equals(keyManager.getPublicKeyHex())) {
+        // A contested nametag resolves to null but is not available; a claimant
+        // may still republish its own binding (e.g. to migrate it to a marked one).
+        return queryNametagClaimants(nametagId).thenCompose(claimants -> {
+            String me = keyManager.getPublicKeyHex();
+            if (!claimants.isEmpty() && claimants.stream().noneMatch(e -> me.equals(e.getPubkey()))) {
                 CompletableFuture<Boolean> failed = new CompletableFuture<>();
                 failed.completeExceptionally(new Exception(
                     "Nametag \"" + nametagId + "\" is already claimed by another pubkey"));
@@ -704,135 +707,147 @@ public class NostrClient {
 
     /**
      * Query Nostr pubkey by nametag.
-     * Uses first-seen-wins anti-hijacking resolution.
+     * Resolves the nametag's single owner (UNIP-01 marked binding preferred);
+     * null if no binding exists or several authors claim it.
      *
      * @param nametagId Nametag identifier
-     * @return CompletableFuture with pubkey (hex) or null if not found
+     * @return CompletableFuture with pubkey (hex), or null if not found or ambiguous
      */
     public CompletableFuture<String> queryPubkeyByNametag(String nametagId) {
         String hashedNametag = NametagUtils.hashNametag(nametagId);
         logger.info("Querying nametag '{}' (hashed: {}...)", nametagId, hashedNametag.substring(0, 16));
 
-        Filter filter = NametagBinding.createNametagToPubkeyFilter(nametagId);
-        return queryWithFirstSeenWins(filter, Event::getPubkey);
+        return queryNametagClaimants(nametagId).thenApply(claimants -> singleOwner(claimants, Event::getPubkey));
     }
 
     /**
      * Query for full binding info by nametag.
-     * Returns extended identity fields (chain pubkey, addresses, etc.) when available.
-     * Uses first-seen-wins across authors, latest-wins for same author.
+     * Returns extended identity fields (chain pubkey, addresses, etc.) when available,
+     * from the owner's latest binding. Same owner selection as queryPubkeyByNametag.
      *
      * @param nametagId Nametag identifier
-     * @return CompletableFuture with BindingInfo, or null if not found
+     * @return CompletableFuture with BindingInfo, or null if not found or ambiguous
      */
     public CompletableFuture<NametagBinding.BindingInfo> queryBindingByNametag(String nametagId) {
-        Filter filter = NametagBinding.createNametagToPubkeyFilter(nametagId);
-        return queryWithFirstSeenWins(filter, NametagBinding::parseBindingInfo);
+        return queryNametagClaimants(nametagId)
+                .thenApply(claimants -> singleOwner(claimants, NametagBinding::parseBindingInfo));
+    }
+
+    /**
+     * Nametag resolution counts only bindings whose d tag is the nametag's hash:
+     * that is the tag a UNIP-01 relay vets ownership of. The filter matches on t,
+     * which any author can attach to an event for a different d.
+     */
+    private CompletableFuture<List<Event>> queryNametagClaimants(String nametagId) {
+        String hashedNametag = NametagUtils.hashNametag(nametagId);
+        return queryBindingClaimants(
+                NametagBinding.createNametagToPubkeyFilter(nametagId),
+                event -> event.getKind() == EventKinds.APP_DATA
+                        && hashedNametag.equals(event.getTagValue("d")),
+                true);
     }
 
     /**
      * Query for binding info by address (reverse lookup).
      * Supports DIRECT://, PROXY://, alpha1..., or chain pubkey lookups.
-     * Uses first-seen-wins across authors, latest-wins for same author.
+     *
+     * No relay vets who may advertise an address, and the UNIP-01 marker vouches
+     * only for a binding's nametag, so the marker is ignored here: the address
+     * resolves only when exactly one author advertises it.
      *
      * @param address Address string
-     * @return CompletableFuture with BindingInfo, or null if not found
+     * @return CompletableFuture with BindingInfo, or null if not found or ambiguous
      */
     public CompletableFuture<NametagBinding.BindingInfo> queryBindingByAddress(String address) {
-        Filter filter = NametagBinding.createAddressToBindingFilter(address);
-        return queryWithFirstSeenWins(filter, NametagBinding::parseBindingInfo);
+        String hashedAddress = NametagUtils.hashAddressForTag(address);
+        return queryBindingClaimants(
+                NametagBinding.createAddressToBindingFilter(address),
+                event -> event.getKind() == EventKinds.APP_DATA
+                        && event.getTagValues("t").contains(hashedAddress),
+                false)
+                .thenApply(claimants -> singleOwner(claimants, NametagBinding::parseBindingInfo));
     }
 
     /**
-     * Query binding events with first-seen-wins anti-hijacking resolution.
+     * The single claimant's result, or null when nobody claims the identifier or
+     * more than one author does: a competing claim (or cross-relay disagreement)
+     * that nothing trustworthy can settle, so resolution does not guess.
+     */
+    private static <T> T singleOwner(List<Event> claimants, java.util.function.Function<Event, T> extractResult) {
+        return claimants.size() == 1 ? extractResult.apply(claimants.get(0)) : null;
+    }
+
+    /**
+     * Query binding events and collect the authors claiming the queried identifier.
      *
-     * Strategy: first-seen-wins across authors, latest-wins for same author.
-     * - Across authors: the pubkey that first published wins (earliest created_at)
-     * - Same author: the most recent event is used (latest created_at = most complete data)
-     * - Tie-breaking: deterministic by lexicographic pubkey comparison (lowest wins)
+     * Only events for which {@code isCandidate} holds are counted: the relay is
+     * untrusted, and a filter match alone proves nothing (anyone can attach any
+     * t tag to their own event). Each author's CURRENT binding is its latest
+     * event (NIP-33 replaceable); older events from the same author are ignored.
+     *
+     * UNIP-01 ({@code useOwnershipMarker}): if any author's current binding
+     * carries the single-owner namespace marker (NIP-32 ["L", "unicity:nametag"]),
+     * only marked authors are considered. A UNIP-01 relay vets the marker for
+     * the event's own d tag, so this is meaningful only when {@code isCandidate}
+     * requires that d tag to be the queried identifier — never for address lookups.
+     *
+     * Resolves to each remaining claimant's latest event. See
+     * {@link #singleOwner}: exactly one claimant is the owner; more than one is
+     * ambiguous. created_at is self-asserted, so it never chooses between authors.
      *
      * Events with invalid signatures are silently skipped to prevent relay injection attacks.
      *
      * @param filter Subscription filter
-     * @param extractResult Function to extract the desired result from the winning event
-     * @return CompletableFuture resolving to the extracted result, or null
+     * @param isCandidate Whether an event binds the queried identifier
+     * @param useOwnershipMarker Whether marked bindings take precedence
+     * @return CompletableFuture resolving to the claimants' latest events
      */
-    private <T> CompletableFuture<T> queryWithFirstSeenWins(Filter filter,
-                                                             java.util.function.Function<Event, T> extractResult) {
-        CompletableFuture<T> future = new CompletableFuture<>();
+    private CompletableFuture<List<Event>> queryBindingClaimants(Filter filter,
+                                                                 java.util.function.Predicate<Event> isCandidate,
+                                                                 boolean useOwnershipMarker) {
+        CompletableFuture<List<Event>> future = new CompletableFuture<>();
         String subscriptionId = "query-" + UUID.randomUUID().toString().substring(0, 8);
 
-        // Track per-author state in a single map so firstSeen and
-        // latestEvent updates for the same pubkey are atomic. Two
-        // separate maps would let pickWinner observe a pubkey in
-        // firstSeen but not yet in latestEvent under multi-relay
-        // concurrent dispatch, returning null prematurely.
-        Map<String, AuthorState> authorState = new ConcurrentHashMap<>();
+        // Author pubkey -> that author's latest candidate event. Updated via
+        // compute() so concurrent multi-relay dispatch cannot lose an update.
+        Map<String, Event> latestByAuthor = new ConcurrentHashMap<>();
 
         // Pick winner from collected per-author state. Used by both
         // EOSE (clean stream end) and CLOSED (relay rejected the
         // subscription mid-stream) so the second case settles promptly
         // instead of waiting the full query timeout.
-        java.util.function.Supplier<T> pickWinner = () -> {
-            if (authorState.isEmpty()) {
-                return null;
-            }
-            // UNIP-01: prefer marker-carrying (relay-vetted single-owner)
-            // bindings, ignoring the self-asserted created_at. The marker is
-            // read from each author's CURRENT (latest, per NIP-33 replaceable)
-            // event, so a newer unmarked update correctly drops the author from
-            // the marked set. Exactly one marked owner is the relay-enforced
-            // norm; more than one distinct marked author means cross-relay
-            // disagreement — do not guess.
-            List<Event> marked = new ArrayList<>();
-            for (AuthorState state : authorState.values()) {
-                if (NametagBinding.hasNametagOwnershipMarker(state.latestEvent)) {
-                    marked.add(state.latestEvent);
+        java.util.function.Supplier<List<Event>> pickClaimants = () -> {
+            List<Event> claimants = new ArrayList<>(latestByAuthor.values());
+            if (useOwnershipMarker) {
+                // The marker is read from each author's CURRENT event, so a newer
+                // unmarked update correctly drops the author from the marked set.
+                List<Event> marked = new ArrayList<>();
+                for (Event event : claimants) {
+                    if (NametagBinding.hasNametagOwnershipMarker(event)) {
+                        marked.add(event);
+                    }
+                }
+                if (!marked.isEmpty()) {
+                    return marked;
                 }
             }
-            if (!marked.isEmpty()) {
-                return marked.size() == 1 ? extractResult.apply(marked.get(0)) : null;
-            }
-            // Legacy fallback: first-seen-wins by self-asserted created_at.
-            String winnerPubkey = null;
-            long winnerFirstSeen = Long.MAX_VALUE;
-            for (Map.Entry<String, AuthorState> entry : authorState.entrySet()) {
-                String pubkey = entry.getKey();
-                long firstSeen = entry.getValue().firstSeen;
-                if (firstSeen < winnerFirstSeen
-                    || (firstSeen == winnerFirstSeen && (winnerPubkey == null || pubkey.compareTo(winnerPubkey) < 0))) {
-                    winnerFirstSeen = firstSeen;
-                    winnerPubkey = pubkey;
-                }
-            }
-            AuthorState winner = authorState.get(winnerPubkey);
-            return winner != null && winner.latestEvent != null
-                    ? extractResult.apply(winner.latestEvent)
-                    : null;
+            return claimants;
         };
 
         NostrEventListener listener = new NostrEventListener() {
             @Override
             public void onEvent(Event event) {
+                if (!isCandidate.test(event)) {
+                    return;
+                }
                 // Verify signature to prevent relay injection of forged events
                 if (!event.verify()) {
                     logger.debug("Skipping event with invalid signature: {}", event.getId());
                     return;
                 }
 
-                String pubkey = event.getPubkey();
-                long createdAt = event.getCreatedAt();
-
-                authorState.compute(pubkey, (k, prev) -> {
-                    if (prev == null) {
-                        return new AuthorState(createdAt, event);
-                    }
-                    long firstSeen = Math.min(prev.firstSeen, createdAt);
-                    Event latest = createdAt > prev.latestEvent.getCreatedAt()
-                            ? event
-                            : prev.latestEvent;
-                    return new AuthorState(firstSeen, latest);
-                });
+                latestByAuthor.compute(event.getPubkey(), (k, prev) ->
+                        prev == null || event.getCreatedAt() > prev.getCreatedAt() ? event : prev);
             }
 
             @Override
@@ -847,7 +862,7 @@ public class NostrClient {
                 if (future.isDone()) return;
                 if (allRelaysDoneFor(subscriptionId)) {
                     unsubscribe(subscriptionId);
-                    future.complete(pickWinner.get());
+                    future.complete(pickClaimants.get());
                 }
             }
 
@@ -876,7 +891,7 @@ public class NostrClient {
                 logger.warn("Subscription error on {}: {}", subId, error);
                 if (allRelaysDoneFor(subscriptionId)) {
                     unsubscribe(subscriptionId);
-                    future.complete(pickWinner.get());
+                    future.complete(pickClaimants.get());
                 }
                 // else: keep waiting for EOSE / CLOSED from remaining
                 // relays or the overall query timeout.
@@ -889,7 +904,7 @@ public class NostrClient {
         CompletableFuture.delayedExecutor(queryTimeoutMs, TimeUnit.MILLISECONDS).execute(() -> {
             if (!future.isDone()) {
                 logger.warn("Query timed out after {}ms", queryTimeoutMs);
-                future.complete(pickWinner.get());
+                future.complete(pickClaimants.get());
                 unsubscribe(subscriptionId);
             }
         });
@@ -928,7 +943,7 @@ public class NostrClient {
     /**
      * True if every currently-connected relay has finished delivering
      * for the given sub_id (either EOSE'd or CLOSED'd it). Used by
-     * queryWithFirstSeenWins to coordinate multi-relay settlement.
+     * queryBindingClaimants to coordinate multi-relay settlement.
      */
     private boolean allRelaysDoneFor(String subscriptionId) {
         java.util.List<RelayConnection> connected = new java.util.ArrayList<>();
@@ -1120,7 +1135,7 @@ public class NostrClient {
         private final java.util.Set<String> closedSubIds =
                 java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
         // Sub_ids this specific relay has EOSE'd for us. Combined with
-        // closedSubIds, lets queryWithFirstSeenWins decide when ALL
+        // closedSubIds, lets queryBindingClaimants decide when ALL
         // connected relays have finished (either streamed EOSE or
         // rejected with CLOSED), so a fast relay's EOSE doesn't
         // settle the query while a slower relay still has matching
@@ -1406,7 +1421,7 @@ public class NostrClient {
             //    unsatisfiable without auth context; post-auth the
             //    same filter might match. We must re-arm the local
             //    "still waiting" state so any in-flight
-            //    queryWithFirstSeenWins doesn't see this relay as
+            //    queryBindingClaimants doesn't see this relay as
             //    already-done from a stale marker.
             eosedSubIds.clear();
             logger.debug("Re-subscribing after auth");
@@ -1443,7 +1458,7 @@ public class NostrClient {
                 emitConnectionEvent("disconnect", url, reason);
 
                 // Re-trigger the all-done check on every active sub.
-                // queryWithFirstSeenWins.allRelaysDoneFor only runs
+                // queryBindingClaimants.allRelaysDoneFor only runs
                 // from listener callbacks (EOSE / CLOSED via onError);
                 // a socket that drops without sending either would
                 // otherwise leave the query hanging until queryTimeoutMs
@@ -1513,7 +1528,7 @@ public class NostrClient {
             emitConnectionEvent("disconnect", url, safeReason);
 
             // Same as onFailure: synthetically notify in-flight subs
-            // so multi-relay queryWithFirstSeenWins re-checks
+            // so multi-relay queryBindingClaimants re-checks
             // allRelaysDoneFor and settles promptly when this relay
             // is no longer counted as connected. Without this the
             // query would hang until queryTimeoutMs.
@@ -1604,7 +1619,7 @@ public class NostrClient {
      * Handle EOSE (End of Stored Events).
      *
      * Records the per-relay EOSE marker (mirroring closedSubIds) so
-     * queryWithFirstSeenWins can decide when ALL connected relays
+     * queryBindingClaimants can decide when ALL connected relays
      * have finished — either streamed EOSE or rejected with CLOSED —
      * instead of settling off the first fast relay's EOSE while a
      * slower relay is still about to deliver matching events.
@@ -1648,7 +1663,7 @@ public class NostrClient {
      * Instead we record the rejection on the sending relay's
      * {@code closedSubIds} so {@code sendAllSubscriptions} skips it on
      * this relay only. The listener is notified via {@code onError}
-     * so callers (e.g. {@code queryWithFirstSeenWins}) can decide to
+     * so callers (e.g. {@code queryBindingClaimants}) can decide to
      * settle and explicitly call {@code unsubscribe()} if they want
      * to give up across all relays.
      *
@@ -1714,23 +1729,6 @@ public class NostrClient {
         QueuedEvent(Event event, long timestamp) {
             this.event = event;
             this.timestamp = timestamp;
-        }
-    }
-
-    /**
-     * Per-author state collected during a queryWithFirstSeenWins run.
-     * Combining {@code firstSeen} and {@code latestEvent} into one
-     * immutable record makes updates atomic via
-     * {@code ConcurrentHashMap.compute}, so {@code pickWinner} cannot
-     * observe a pubkey with firstSeen set but latestEvent null.
-     */
-    private static class AuthorState {
-        final long firstSeen;
-        final Event latestEvent;
-
-        AuthorState(long firstSeen, Event latestEvent) {
-            this.firstSeen = firstSeen;
-            this.latestEvent = latestEvent;
         }
     }
 }
